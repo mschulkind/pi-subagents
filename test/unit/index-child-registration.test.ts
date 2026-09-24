@@ -686,6 +686,10 @@ describe("subagent extension child mode", () => {
 				for (const handler of handlers.get("tool_result")) await handler({ toolName: "subagent" }, ctx);
 				const asyncWidgets = widgets.filter((entry) => entry.key === "subagent-async");
 				if (!asyncWidgets.some((entry) => entry.value !== undefined)) throw new Error("async widget was not rendered with FleetView enabled: " + JSON.stringify(asyncWidgets));
+				const fleetWidget = widgets.findLast((entry) => entry.key === "subagent-fleet-status" && entry.value);
+				if (!fleetWidget) throw new Error("FleetView widget missing");
+				const fleetLines = fleetWidget.value({ requestRender() {} }, ctx.ui.theme).render(100);
+				if (fleetLines.length < 2) throw new Error("FleetView should show detailed rows without input: " + JSON.stringify(fleetLines));
 				for (const handler of handlers.get("session_shutdown")) await handler();
 			`;
 			const env = parentToolEnv();

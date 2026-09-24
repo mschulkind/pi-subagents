@@ -208,6 +208,14 @@ Controls the persistent, navigable FleetView. The default is `true`. Set it to `
 
 Places the persistent FleetView either `"belowEditor"` or `"aboveEditor"`. The default is `"belowEditor"`; invalid values fall back to `"belowEditor"`.
 
+## `fleetViewDetailMode`
+
+```json
+{ "fleetViewDetailMode": "compact" }
+```
+
+Controls the persistent FleetView's passive presentation. The default is `"detailed"`: bounded agent and workflow rows stay visible below the editor without taking keyboard focus. Press `↓` or `←` at an empty editor to select a row, `Esc` to stop selecting while keeping the rows visible, and open `/subagents-fleet` for the full inspector. Set `"compact"` to restore the one-line summary until keyboard activation; this does not change the separate under-editor async widget or the full inspector.
+
 ## `fleetKeybindings`
 
 ```json

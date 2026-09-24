@@ -2639,6 +2639,8 @@ export interface ExtensionConfig {
 	fleetView?: boolean;
 	/** Place the persistent FleetView above or below the editor. Defaults to belowEditor. */
 	fleetViewPlacement?: FleetViewPlacement;
+	/** Show bounded detailed FleetView rows without capturing editor input. Defaults to detailed. */
+	fleetViewDetailMode?: "compact" | "detailed";
 	/** Local keybindings for the full Fleet inspector. */
 	fleetKeybindings?: FleetKeybindingsConfig;
 	/** Show the under-editor async runs widget. Defaults to true, including when FleetView is enabled. */

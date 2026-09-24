@@ -93,6 +93,8 @@ export interface FleetStatusOptions {
 	refreshMs?: number;
 	maxAgentRows?: number;
 	placement?: FleetViewPlacement;
+	/** Detailed rows remain visible without capturing editor navigation. */
+	detailMode?: "compact" | "detailed";
 	onWorkflowCoverageChange?: (ui: ExtensionContext["ui"], coverage: ReadonlyMap<string, string>) => void;
 }
 
@@ -546,6 +548,7 @@ export class SubagentFleetStatus {
 	private readonly refreshMs: number;
 	private readonly maxAgentRows: number;
 	private readonly placement: FleetViewPlacement;
+	private readonly detailMode: "compact" | "detailed";
 
 	constructor(
 		state: SubagentState,
@@ -557,6 +560,7 @@ export class SubagentFleetStatus {
 		this.refreshMs = options.refreshMs ?? REFRESH_MS;
 		this.maxAgentRows = options.maxAgentRows ?? MAX_AGENT_ROWS;
 		this.placement = options.placement ?? "belowEditor";
+		this.detailMode = options.detailMode ?? "compact";
 		this.onWorkflowCoverageChange = options.onWorkflowCoverageChange;
 	}
 
@@ -602,7 +606,7 @@ export class SubagentFleetStatus {
 		}
 		this.entries = collectFleetStatusEntries(this.state);
 		this.workflowSnapshots.clear();
-		if (this.active && !this.inspectorOpen && !this.state.fleetInspectorOpen && this.onWorkflowCoverageChange) {
+		if (this.showsDetails() && !this.inspectorOpen && !this.state.fleetInspectorOpen && this.onWorkflowCoverageChange) {
 			const childrenByParent = new Map<string, AsyncJobState[]>();
 			for (const child of this.state.asyncJobs.values()) {
 				if (!child.parentWorkflowRunId) continue;
@@ -662,7 +666,7 @@ export class SubagentFleetStatus {
 		}
 
 		const renderKey = this.getRenderKey();
-		if (!this.active || renderKey !== this.lastRenderKey) this.clearWorkflowCoverage();
+		if (!this.showsDetails() || renderKey !== this.lastRenderKey) this.clearWorkflowCoverage();
 		if (!this.widgetRegistered) {
 			ctx.ui.setWidget(FLEET_STATUS_WIDGET_KEY, (tui, theme) => {
 				this.tui = tui;
@@ -759,7 +763,7 @@ export class SubagentFleetStatus {
 			this.clearWorkflowCoverage();
 			return [];
 		}
-		if (!this.active) {
+		if (!this.showsDetails()) {
 			this.clearWorkflowCoverage();
 			const workEntries = this.entries.filter((entry) => !entry.surface);
 			const projectEntries = this.entries.filter((entry) => entry.surface === "project-pane");
@@ -789,12 +793,13 @@ export class SubagentFleetStatus {
 			return [truncateToWidth(`  ${theme.fg("muted", label)}${label && detail ? " · " : ""}${theme.fg("dim", detail)}`, width)];
 		}
 		const roster = this.rosterKeys();
-		const selectedIndex = Math.max(0, roster.indexOf(this.selectedKey));
+		const selectedIndex = this.active ? Math.max(0, roster.indexOf(this.selectedKey)) : -1;
 		const rosterIndexByKey = new Map<string, number>();
 		for (const [index, entry] of this.entries.entries()) {
 			if (!rosterIndexByKey.has(entry.key)) rosterIndexByKey.set(entry.key, index + 1);
 		}
-		const lines = [truncateToWidth(`  ${theme.fg("dim", "↑↓/jk select · enter inspect · esc back")}`, width), ""];
+		const hint = this.active ? "↑↓/jk select · enter inspect · esc back" : "↓/← to select · /subagents-fleet to inspect";
+		const lines = [truncateToWidth(`  ${theme.fg("dim", hint)}`, width), ""];
 		lines.push(truncateToWidth(`  ${this.bullet(0, selectedIndex, theme)} main`, width));
 
 		const workEntries = this.entries.filter((entry) => !entry.surface);
@@ -975,13 +980,17 @@ export class SubagentFleetStatus {
 			&& typeof candidate.setText === "function";
 	}
 
+	private showsDetails(): boolean {
+		return this.active || this.detailMode === "detailed";
+	}
+
 	private getRenderKey(): string {
 		const now = Date.now();
 		return JSON.stringify({
 			active: this.active,
 			selected: this.selectedKey,
 			inspectorOpen: this.inspectorOpen,
-			entries: this.entries.map((entry) => this.active
+			entries: this.entries.map((entry) => this.showsDetails()
 				? [
 					entry.key,
 					entry.surface,

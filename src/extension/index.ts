@@ -508,7 +508,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				}
 				throw error;
 			}
-		}, { placement: fleetViewPlacement, onWorkflowCoverageChange: setInlineWorkflowCoverage })
+		}, { placement: fleetViewPlacement, detailMode: config.fleetViewDetailMode ?? "detailed", onWorkflowCoverageChange: setInlineWorkflowCoverage })
 		: undefined;
 	let executorScheduled: ((id: string, params: SubagentParamsLike, signal: AbortSignal, ctx: ExtensionContext) => Promise<AgentToolResult<Details>>) | undefined;
 	let goalTurnId = 0;

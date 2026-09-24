@@ -1538,7 +1538,7 @@ describe("below-editor subagent FleetView", () => {
 		const fleet = new SubagentFleetStatus(state, (key) => {
 			opened.push(key);
 			return new Promise<void>((resolve) => { closeInspector = resolve; });
-		}, { refreshMs: 60_000 });
+		}, { refreshMs: 60_000, detailMode: "detailed" });
 		try {
 			fleet.setContext(ctx);
 			assert.ok(inputHandler);
@@ -1566,7 +1566,7 @@ describe("below-editor subagent FleetView", () => {
 			tui.focusedComponent = crossModuleCustomEditor as unknown as Editor;
 			assert.equal(inputHandler!("j"), undefined, "inactive FleetView should retain printable navigation keys");
 			assert.equal(inputHandler!("k"), undefined, "inactive FleetView should retain printable navigation keys");
-			assert.equal(component.render(100).length, 1, "inactive FleetView should stay compact");
+			assert.ok(component.render(100).some((line) => line.includes("worker")), "detailed roster is visible without taking editor focus");
 			assert.deepEqual(inputHandler!("\x1b[B"), { consume: true }, "custom editors should activate FleetView across jiti boundaries");
 			assert.ok(component.render(100).length > 1, "keyboard activation should expand the roster");
 			assert.deepEqual(inputHandler!("j"), { consume: true }, "active FleetView should navigate down with j");
@@ -1589,7 +1589,7 @@ describe("below-editor subagent FleetView", () => {
 			const restoredComponent = widgetFactory!(tui, theme);
 			assert.ok(restoredComponent.render(100).some((line) => line.includes("> worker")), "closing should restore the prior selected roster row");
 			assert.deepEqual(inputHandler!("\x1b"), { consume: true });
-			assert.equal(restoredComponent.render(100).length, 1, "Escape should return to the compact summary");
+			assert.ok(restoredComponent.render(100).some((line) => line.includes("worker")), "Escape should release input while keeping details visible");
 		} finally {
 			fleet.dispose();
 		}

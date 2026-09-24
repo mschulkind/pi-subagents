@@ -149,6 +149,9 @@ function validateConfig(config: Record<string, unknown>): void {
 			|| config.checkpointBeforeDeadlineMs > 2_147_483_647)) {
 		throw new Error("config.checkpointBeforeDeadlineMs must be a positive integer no larger than 2147483647");
 	}
+	if (config.fleetViewDetailMode !== undefined && config.fleetViewDetailMode !== "compact" && config.fleetViewDetailMode !== "detailed") {
+		throw new Error('config.fleetViewDetailMode must be "compact" or "detailed"');
+	}
 	if (config.foregroundDetachShortcut !== undefined
 		&& (typeof config.foregroundDetachShortcut !== "string" || !isValidKeyId(config.foregroundDetachShortcut))) {
 		throw new Error("config.foregroundDetachShortcut must be a valid keybinding string such as \"ctrl+b\"");

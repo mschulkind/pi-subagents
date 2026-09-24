@@ -79,23 +79,17 @@ Thanks to [DraconDev](https://github.com/DraconDev) for reporting the display no
 
 ## FleetView
 
-In the TUI, a persistent FleetView below the editor keeps active work visible as a compact summary. Set `fleetViewPlacement` to `"aboveEditor"` to move it above the editor.
+In the TUI, the persistent FleetView below the editor shows bounded agent and workflow rows by default. It remains passive, so typing in the editor is unaffected. Set `fleetViewDetailMode` to `"compact"` to show the one-line summary until you select the widget, or `fleetViewPlacement` to `"aboveEditor"` to move it above the editor.
 
 ```text
-2 active agents · 1 pane · ↓ 3.1k window · 4.2k spent · ↓/← to inspect
-```
+↓/← to select · /subagents-fleet to inspect
 
-After you expand it:
-
-```text
-↑↓/jk select · enter inspect · esc back
-
-> main
+  main
     scout · running         1m 12s · ↓ 2.0k window · 2.8k spent
     reviewer · running        38s · ↓ 1.1k window · 1.4k spent
 ```
 
-When the focused editor is empty, press `↓` or `←` to expand the summary into `main` plus active children with agent name, state, elapsed time, and token usage. When providers report usage, `window` is the latest assistant turn's input plus cache-read tokens, while `spent` keeps the cumulative input-plus-output total. Old run artifacts without window data keep the existing token-total label. The compact line counts active current-session work and Herdr project panes. Then use `↑`/`↓` or `j`/`k` to select a child and `Enter` to open the Fleet lobby; press `Enter` or `H` there to open its child-specific inspector through an available Inspect plugin. Printable navigation keys are never intercepted before activation.
+When the focused editor is empty, press `↓` or `←` to select the FleetView. Then `↑`/`↓` or `j`/`k` selects a child, and `Enter` opens the Fleet lobby; `Enter` or `H` there opens its child-specific inspector through an available Inspect plugin. `Esc` releases selection without hiding the detailed rows. In compact mode, the inactive line counts active current-session work and Herdr project panes. When providers report usage, `window` is the latest assistant turn's input plus cache-read tokens, while `spent` keeps the cumulative input-plus-output total. Old run artifacts without window data keep the existing token-total label. Printable navigation keys are never intercepted before activation.
 
 FleetView and the under-editor async widget are both enabled by default; set `asyncWidget: false` to keep only FleetView. Successful background completions stay quiet so inactive Pi tabs are not marked unread, while failed or paused completions still notify the originating session. Parallel runs show every active child independently. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `tools: subagent` or `allowNestedSubagents: true`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child session.
 

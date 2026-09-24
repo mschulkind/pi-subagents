@@ -367,6 +367,14 @@ Package skill content.
 		}
 	});
 
+	it("loads and validates the FleetView detail mode", () => {
+		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
+		writeFile(configPath, JSON.stringify({ fleetViewDetailMode: "compact" }));
+		assert.equal(loadConfig().fleetViewDetailMode, "compact");
+		writeFile(configPath, JSON.stringify({ fleetViewDetailMode: "verbose" }));
+		assert.throws(() => updateConfig((config) => config), /config\.fleetViewDetailMode must be "compact" or "detailed"/);
+	});
+
 	it("loads and validates Fleet keybinding config", () => {
 		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
 		writeFile(configPath, JSON.stringify({ fleetKeybindings: { pageUp: ["u"], pageDown: ["d"] } }));
