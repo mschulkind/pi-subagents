@@ -9,6 +9,7 @@ import { formatWorkflowJsonPreview } from "../workflows/scripted-workflow.ts";
 import { hostStepReportName, hostStepVerdictLabel } from "../runs/shared/host-step-status.ts";
 import { isStaleExtensionContextError } from "../shared/extension-context.ts";
 import { inlineWorkflowRenderKey } from "./render.ts";
+import { openMixedWorkflow, readMixedWorkflows, releaseMixedWorkflows, type MixedWorkflowRow } from "./mixed-workflows.ts";
 import { formatWorkflowChecklistBottleneck, formatWorkflowChecklistPhase, formatWorkflowChecklistSummary, projectWorkflowChecklist, type WorkflowChecklistPhase, type WorkflowChecklistProjection } from "../workflows/workflow-checklist.ts";
 
 export const FLEET_STATUS_WIDGET_KEY = "subagent-fleet-status";
@@ -64,6 +65,7 @@ type FleetStatusEntry = {
 	window?: number;
 	state: string;
 	external?: true;
+	mixedWorkflow?: MixedWorkflowRow;
 	projectPane?: HerdrProjectPaneSnapshot;
 	nestedChildren?: NestedRunSummary[];
 	workflowRows?: AsyncStatusWorkflowRow[];
@@ -366,7 +368,7 @@ function projectPaneEntries(state: SubagentState): FleetStatusEntry[] {
 		}));
 }
 
-export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntry[] {
+export function collectFleetStatusEntries(state: SubagentState, mixedRows: MixedWorkflowRow[] = []): FleetStatusEntry[] {
 	const now = Date.now();
 	const entries: FleetStatusEntry[] = [];
 	const activeWorkflowKeys = new Set([...state.asyncJobs.values()]
@@ -525,6 +527,17 @@ export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntr
 		}
 	}
 
+	for (const run of mixedRows) {
+		entries.push({
+			key: `mixed-workflow:${run.id}`,
+			agent: "workflow",
+			displayLabel: `workflow · ${run.name}`,
+			startedAt: run.startedAt,
+			tokens: 0,
+			state: run.status,
+			mixedWorkflow: run,
+		});
+	}
 	entries.push(...projectPaneEntries(state));
 	return entries.sort((left, right) => left.startedAt - right.startedAt || left.key.localeCompare(right.key));
 }
@@ -604,7 +617,8 @@ export class SubagentFleetStatus {
 			this.clearWidget();
 			return;
 		}
-		this.entries = collectFleetStatusEntries(this.state);
+		this.entries = collectFleetStatusEntries(this.state, this.ui && !this.state.widgetsSuspended
+			? readMixedWorkflows(this.state.currentSessionId) : []);
 		this.workflowSnapshots.clear();
 		if (this.showsDetails() && !this.inspectorOpen && !this.state.fleetInspectorOpen && this.onWorkflowCoverageChange) {
 			const childrenByParent = new Map<string, AsyncJobState[]>();
@@ -745,7 +759,14 @@ export class SubagentFleetStatus {
 			this.refresh();
 			const selectedKey = this.selectedKey;
 			void Promise.resolve()
-				.then(() => this.openInspector(selectedKey))
+				.then(async () => {
+					if (selectedKey.startsWith("mixed-workflow:")) {
+						const opened = await openMixedWorkflow(this.state.currentSessionId, selectedKey.slice("mixed-workflow:".length));
+						if (!opened) ctx.ui.notify("Workflow is no longer available in this session.", "warning");
+					} else {
+						await this.openInspector(selectedKey);
+					}
+				})
 				.catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"))
 				.finally(() => {
 					this.inspectorOpen = false;
@@ -770,7 +791,7 @@ export class SubagentFleetStatus {
 			// Workflow totals can overlap child usage and omit live lanes. Do not
 			// present either wrapper totals or an active-only sum as workflow spend.
 			const hasWorkflow = workEntries.some((entry) => entry.workflowWrapper);
-			const nativeEntries = workEntries.filter((entry) => !entry.external && !entry.workflowWrapper && !entry.parentKey);
+			const nativeEntries = workEntries.filter((entry) => !entry.external && !entry.workflowWrapper && !entry.mixedWorkflow && !entry.parentKey);
 			const tokens = nativeEntries.reduce((total, entry) => total + entry.tokens, 0);
 			const window = nativeEntries.length > 0 && nativeEntries.every((entry) => entry.window !== undefined)
 				? nativeEntries.reduce((total, entry) => total + entry.window!, 0)
@@ -779,16 +800,18 @@ export class SubagentFleetStatus {
 			const hasNativeRows = nativeEntries.length > 0 || hasWorkflow;
 			const showNativeSummary = hasNativeRows || Boolean(capacity?.used);
 			const asyncRuns = capacity && showNativeSummary && (capacity.used > 0 || capacity.limit > 0) ? `Async runs ${capacity.used}/${capacity.limit || "∞"}` : "";
-			const activeEntries = activeLeafAgentCount(workEntries);
+			const activeEntries = activeLeafAgentCount(workEntries.filter((entry) => !entry.mixedWorkflow));
+			const mixed = workEntries.filter((entry) => entry.mixedWorkflow).map((entry) => entry.mixedWorkflow!);
 			const noun = workEntries.some((entry) => entry.external) ? "job" : "agent";
 			const agents = activeEntries > 0 ? `${activeEntries} active ${noun}${activeEntries === 1 ? "" : "s"}` : "";
+			const workflowProgress = mixed.length ? `${mixed.length} workflow${mixed.length === 1 ? "" : "s"} · ${mixed.reduce((n, run) => n + run.done, 0)}/${mixed.reduce((n, run) => n + run.total, 0)} agents` : "";
 			const paneAttention = projectEntries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).length;
 			const panes = projectEntries.length > 0 ? `${projectEntries.length} pane${projectEntries.length === 1 ? "" : "s"}${paneAttention ? ` (${paneAttention} ⚠)` : ""}` : "";
-			const label = [agents, asyncRuns, panes].filter(Boolean).join(" · ");
+			const label = [agents, workflowProgress, asyncRuns, panes].filter(Boolean).join(" · ");
 			const nativeUsage = formatFleetTokens(tokens, window, nativeEntries.length);
 			const usage = hasWorkflow
 				? nativeEntries.length > 0 ? `standalone: ${nativeUsage} · workflow usage on child rows` : "usage on child rows"
-				: nativeUsage;
+				: nativeEntries.length > 0 || (showNativeSummary && mixed.length === 0) ? nativeUsage : "";
 			const detail = [showNativeSummary ? usage : undefined, "↓/← to inspect"].filter(Boolean).join(" · ");
 			return [truncateToWidth(`  ${theme.fg("muted", label)}${label && detail ? " · " : ""}${theme.fg("dim", detail)}`, width)];
 		}
@@ -865,11 +888,13 @@ export class SubagentFleetStatus {
 		const checklist = entry.workflowWrapper && entry.workflowChecklist
 			? ` · checklist ${formatWorkflowChecklistSummary(entry.workflowChecklist)}${entry.workflowChecklist.bottleneck ? ` · bottleneck ${formatWorkflowChecklistBottleneck(entry.workflowChecklist.bottleneck)}` : ""}`
 			: "";
-		const left = `${prefix} ${this.bullet(rosterIndex, selectedIndex, theme)} ${theme.fg(fleetAgentIdentityColor(entry.agent), agent)} · ${entry.state}${checklist}`;
+		const phase = entry.mixedWorkflow?.phase ? ` · ${entry.mixedWorkflow.phase}` : "";
+		const left = `${prefix} ${this.bullet(rosterIndex, selectedIndex, theme)} ${theme.fg(fleetAgentIdentityColor(entry.agent), agent)} · ${entry.state}${phase}${checklist}`;
 		const elapsed = Date.now() - entry.startedAt;
 		const rightText = entry.projectPane
 			? `${entry.projectPane.summary ?? "—"} · ${formatFleetElapsed(Date.now() - entry.projectPane.refreshedAt)} ago`
-				: entry.external ? formatFleetElapsed(elapsed) : `${formatFleetElapsed(elapsed)} · ${entry.workflowWrapper ? "usage on child rows" : formatFleetTokens(entry.tokens, entry.window)}`;
+			: entry.mixedWorkflow ? `${entry.mixedWorkflow.done}/${entry.mixedWorkflow.total} agents`
+			: entry.external ? formatFleetElapsed(elapsed) : `${formatFleetElapsed(elapsed)} · ${entry.workflowWrapper ? "usage on child rows" : formatFleetTokens(entry.tokens, entry.window)}`;
 		const right = theme.fg("dim", rightText);
 		if (unclipped) return `${left} ${right}`;
 		return rightAlign(left, right, width);
@@ -1080,6 +1105,7 @@ export class SubagentFleetStatus {
 	}
 
 	private clearUiRegistration(): void {
+		releaseMixedWorkflows(this.state.currentSessionId);
 		this.clearWorkflowCoverage();
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
