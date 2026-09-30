@@ -7,7 +7,6 @@ import { registerSubagentCapabilityCeiling, resolveSubagentCapabilityCeiling } f
 import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
 import { resolveSubagentLaunchContract, SUBAGENT_LAUNCH_CONTRACT_VERSION } from "../../src/api/preflight.ts";
 import { clearSkillCache } from "../../src/agents/skills.ts";
-import { computeMcpServerHash } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
 import { TEMP_ARTIFACTS_DIR } from "../../src/shared/types.ts";
 
 let tempDir = "";
@@ -36,17 +35,7 @@ function writeMcpFixture(): void {
 	assert.equal(typeof agentDir, "string");
 	const definition = { command: "github-mcp" };
 	writeJson(path.join(agentDir, "mcp.json"), { mcpServers: { github: definition } });
-	writeJson(path.join(agentDir, "mcp-cache.json"), {
-		version: 1,
-		servers: {
-			github: {
-				configHash: computeMcpServerHash(definition),
-				cachedAt: Date.now(),
-				tools: [{ name: "search_repositories" }, { name: "create_issue" }],
-				resources: [],
-			},
-		},
-	});
+
 }
 
 describe("public launch contract preflight", () => {
@@ -761,8 +750,8 @@ Project prompt.
 		assert.equal(result.contract.tools.explicitAllowlist, true);
 		assert.equal(result.contract.tools.fanoutAuthorized, true);
 		assert.deepEqual(result.contract.tools.internalTools, ["structured_output"]);
-		assert.deepEqual(result.contract.tools.effectiveMcpTools, ["github_search_repositories"]);
-		assert.deepEqual(result.contract.tools.requiredChildTools, ["read", "subagent", "github_search_repositories", "structured_output"]);
+		assert.deepEqual(result.contract.tools.effectiveMcpTools, ["mcp__github__search_repositories"]);
+		assert.deepEqual(result.contract.tools.requiredChildTools, ["read", "subagent", "mcp__github__search_repositories", "structured_output"]);
 		assert.deepEqual(result.contract.tools.toolExtensionPaths, ["/tmp/tool-ext.ts"]);
 		assert.equal(result.contract.tools.disableAmbientExtensions, true);
 		assert.ok(result.contract.tools.runtimeExtensions.some((extensionPath) => extensionPath.endsWith("subagent-prompt-runtime.ts")));
@@ -1038,7 +1027,7 @@ Project prompt.
 		assert.match(result.message, /excludes required tool 'read'/);
 	});
 
-	it("reports unresolved runtime-style MCP selectors during preflight", async () => {
+	it("defers native MCP availability to the trusted child registry", async () => {
 		const cwd = path.join(tempDir, "repo-unresolved-runtime-mcp");
 		fs.mkdirSync(cwd, { recursive: true });
 		writeAgent(path.join(cwd, ".pi", "agents", "worker.md"), `---
@@ -1052,8 +1041,6 @@ Project prompt.
 `);
 
 		const result = await resolveSubagentLaunchContract({ agent: "worker", cwd, task: "Inspect" });
-		assert.equal(result.ok, false);
-		assert.equal(result.code, "denied_required_tool");
-		assert.match(result.message, /Unresolved MCP direct-tool selectors: rt__wiki\/read_wiki_structure\./);
+		assert.equal(result.ok, true);
 	});
 });

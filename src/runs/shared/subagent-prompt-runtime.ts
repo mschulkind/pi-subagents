@@ -496,7 +496,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	});
 	onRuntimeEvent("agent_start", () => {
 		if (!config.requiredTools) return;
-		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().map((tool) => tool.name));
+		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().filter((tool) => tool.exposure !== "hidden").map((tool) => tool.name));
 		config.toolDiagnostic?.(diagnostic);
 		if (diagnostic) throw new Error(formatChildToolDiagnostic(diagnostic));
 	});

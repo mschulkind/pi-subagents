@@ -195,17 +195,6 @@ function hasPermissionRules(rules: PermissionRules | undefined): boolean {
 	return rules !== undefined && Object.keys(rules).length > 0;
 }
 
-/**
- * Children are pi sessions inside the parent or the runner process; a spawned
- * `pi` received extra MCP server definitions as a CLI argument, but a session
- * has no such input. Selecting a server that exists only in pi-mcp-adapter's
- * runtime snapshot therefore cannot work and fails the launch.
- */
-export function formatRuntimeSnapshotMcpServersError(agentName: string | undefined, serverNames: readonly string[]): string {
-	const subject = agentName ? `Agent '${agentName}'` : "Subagent";
-	return `${subject} selects MCP tools from servers that exist only in pi-mcp-adapter's runtime snapshot (${serverNames.join(", ")}). MCP servers from the runtime snapshot cannot be provided to in-process children; MCP tools must come from an ambient adapter extension in a background child (\`async: true\`), so add the server to the adapter's configuration file instead.`;
-}
-
 export function projectLaunchResolvedChildExtensions(
 	toolPlan: Pick<
 		PiLaunchToolPlan,
@@ -351,21 +340,18 @@ export function resolvePiLaunchToolPlan(
 	const mcpResolution = capabilityCeiling?.denyExtensions
 		? { selections: [], unresolvedSelectors: [] }
 		: resolveMcpDirectToolResolution(input.mcpDirectTools, input.cwd, input.runtimeSnapshotHost);
-	if (mcpResolution.runtimeServerNames?.length) {
-		throw new Error(formatRuntimeSnapshotMcpServersError(input.agentName, mcpResolution.runtimeServerNames));
-	}
 	if (mcpResolution.unresolvedSelectors.length > 0) {
 		throw new Error(formatUnresolvedMcpDirectToolSelectors(mcpResolution.unresolvedSelectors));
 	}
 	const resolvedMcpSelections = mcpResolution.selections;
-	const resolvedMcpNames = new Set(resolvedMcpSelections.map((selection) => selection.name));
-	const legacyMcpNameCounts = countLegacyUnderscoreMcpToolNames(resolvedMcpSelections);
-	const effectiveMcpSelections = resolvedMcpSelections.filter(
-		(selection) =>
-			!allowedToolSet ||
-			allowedToolSet.has(selection.name) ||
-			isLegacyUnderscoreMcpToolAllowed(selection, allowedToolSet, resolvedMcpNames, legacyMcpNameCounts),
-	).filter((selection) => !excludedToolSet.has(selection.name));
+	const effectiveMcpSelections = resolvedMcpSelections.flatMap((selection) => {
+		if (!allowedToolSet) return [selection];
+		if (allowedToolSet.has(selection.name)) return [selection];
+		if (selection.name.endsWith("__*")) return [...allowedToolSet]
+			.filter(name => name.startsWith(selection.name.slice(0, -1)))
+			.map(name => ({ ...selection, name }));
+		return [];
+	}).filter(selection => !excludedToolSet.has(selection.name));
 	const effectiveMcpTools = effectiveMcpSelections.map(
 		(selection) => selection.name,
 	);
@@ -511,34 +497,4 @@ export function resolvePiLaunchToolPlan(
 		warnings,
 		...(capabilityAudit ? { capabilityAudit } : {}),
 	};
-}
-
-// Capability ceilings persisted before #1685 may still name hyphenated MCP server prefixes with underscores.
-function countLegacyUnderscoreMcpToolNames(selections: readonly ResolvedMcpDirectToolSelection[]): Map<string, number> {
-	const counts = new Map<string, number>();
-	for (const selection of selections) {
-		const legacyName = legacyUnderscoreMcpToolName(selection);
-		if (legacyName !== selection.name) counts.set(legacyName, (counts.get(legacyName) ?? 0) + 1);
-	}
-	return counts;
-}
-
-function isLegacyUnderscoreMcpToolAllowed(
-	selection: ResolvedMcpDirectToolSelection,
-	allowedToolSet: ReadonlySet<string>,
-	resolvedMcpNames: ReadonlySet<string>,
-	legacyMcpNameCounts: ReadonlyMap<string, number>,
-): boolean {
-	const legacyName = legacyUnderscoreMcpToolName(selection);
-	return legacyMcpNameCounts.get(legacyName) === 1 && !resolvedMcpNames.has(legacyName) && allowedToolSet.has(legacyName);
-}
-
-function legacyUnderscoreMcpToolName(selection: ResolvedMcpDirectToolSelection): string {
-	const slash = selection.selector.indexOf("/");
-	if (slash < 1) return selection.name;
-	const toolName = selection.selector.slice(slash + 1);
-	const suffix = `_${toolName}`;
-	if (!selection.name.endsWith(suffix)) return selection.name;
-	const prefix = selection.name.slice(0, -suffix.length);
-	return `${prefix.replace(/-/g, "_")}${suffix}`;
 }

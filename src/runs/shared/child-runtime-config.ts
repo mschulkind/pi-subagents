@@ -1,3 +1,4 @@
+import { childToolNameMatches } from "./mcp-direct-tool-allowlist.ts";
 import type { JsonSchemaObject, ResolvedToolBudget, RunFanoutBudgetDescriptor, SubagentState } from "../../shared/types.ts";
 import type { ThinkingLevel } from "../../shared/model-info.ts";
 import type { NestedPathEntry } from "./nested-path.ts";
@@ -123,7 +124,7 @@ export function childSupervisorMetadata(config: ChildRuntimeConfig): ChildSuperv
 export function evaluateChildToolDiagnostic(config: Pick<ChildRuntimeConfig, "agent" | "requiredTools" | "mcpDirectTools">, availableTools: string[]): ChildToolDiagnostic | undefined {
 	if (!config.requiredTools) return undefined;
 	const available = new Set(availableTools);
-	const missing = config.requiredTools.filter((name) => !available.has(name));
+	const missing = config.requiredTools.filter((name) => ![...available].some(tool => childToolNameMatches(name, tool)));
 	if (missing.length === 0) return undefined;
 	const missingMcpDirectTools = config.mcpDirectTools?.length ? missing.filter((name) => config.mcpDirectTools!.includes(name)) : [];
 	return {

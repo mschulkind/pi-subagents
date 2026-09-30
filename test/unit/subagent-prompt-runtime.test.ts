@@ -973,7 +973,7 @@ describe("subagent prompt runtime", () => {
 		}
 	});
 
-	it("records requested tools missing from the child registry after startup hooks settle", async () => {
+	it("treats a registered hidden tool as unavailable until a callable provider registers it", async () => {
 		{
 			const diagnostics: Array<ChildToolDiagnostic | undefined> = [];
 			const handlers = new Map<string, (payload?: unknown) => unknown>();
@@ -983,7 +983,7 @@ describe("subagent prompt runtime", () => {
 				on(event: string, handler: (payload?: unknown) => unknown) {
 					handlers.set(event, handler);
 				},
-				getAllTools: () => available.map((name) => ({ name })),
+				getAllTools: () => [{ name: "fixture_search", exposure: "hidden" }, ...available.map((name) => ({ name }))],
 				registerTool() {},
 			} as { on(event: string, handler: (payload?: unknown) => unknown): void; getAllTools(): Array<{ name: string }>; registerTool(): void }, childConfig({
 				agent: "extension-worker",
@@ -1036,7 +1036,7 @@ describe("subagent prompt runtime", () => {
 				missing: ["rust_symbols_workspace_symbols", "fixture_search"],
 				missingMcpDirectTools: ["rust_symbols_workspace_symbols"],
 			});
-			assert.match(formatChildToolDiagnostic(diagnostic!), /must match what the host or pi-mcp-adapter registers/);
+			assert.match(formatChildToolDiagnostic(diagnostic!), /must match what the native MCP registers/);
 			assert.match(formatChildToolDiagnostic(diagnostic!), /fixture_search/);
 		}
 	});

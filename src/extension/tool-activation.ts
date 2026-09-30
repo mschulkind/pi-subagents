@@ -14,8 +14,8 @@ interface ActivationDetails {
 
 const LOADER_NAME = "subagents_enable";
 const SUBAGENT_NAME = "subagent";
-const MINIMUM_DYNAMIC_TOOLS_VERSION = [0, 86, 1] as const;
-const UNSUPPORTED_HOST_MESSAGE = "Dynamic tool activation requires Pi 0.86.1 or newer";
+const MINIMUM_DYNAMIC_TOOLS_VERSION = [0, 99, 0] as const;
+const UNSUPPORTED_HOST_MESSAGE = "Dynamic tool activation requires Pi 0.99.0 or newer";
 let warnedUnsupportedHost = false;
 
 /** Returns why dynamic tool activation is unavailable, or undefined when the host supports it. */

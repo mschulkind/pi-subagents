@@ -209,7 +209,7 @@ describe("createForkContextResolver", () => {
 		}
 	});
 
-	it("fails clearly for an unflushed user-only parent", () => {
+	it("fails clearly for a parent whose persisted file is missing", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
@@ -220,6 +220,7 @@ describe("createForkContextResolver", () => {
 
 			assert.ok(parentSessionFile);
 			assert.ok(leafId);
+			fs.rmSync(parentSessionFile, { force: true });
 			assert.equal(fs.existsSync(parentSessionFile), false);
 
 			const resolver = createForkContextResolver(parent, "fork");

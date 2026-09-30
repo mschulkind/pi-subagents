@@ -12,6 +12,8 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { resolveChildProjectTrust } from "./child-project-trust.ts";
+import { nativeChildExtensions } from "./native-child-extensions.ts";
 import { pinChildCacheRetention } from "../../shared/child-cache-retention.ts";
 import { getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
 import { resolvePackageSubpath } from "../background/runner-aliases.ts";
@@ -65,6 +67,8 @@ export interface ChildSessionLaunch {
 	/** Explicit tool allowlist; undefined keeps pi's defaults. */
 	tools?: string[];
 	excludeTools?: string[];
+	/** Native selections retain raw server/tool identities, not just sanitized names. */
+	mcpSelections?: { name: string; selector: string }[];
 	/** Extension files loaded for this child in addition to the inline hooks. */
 	extensionPaths: string[];
 	/** Canonical required paths and safe evidence identities for fail-closed loading. */
@@ -310,7 +314,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				? await pi.ModelRuntime.create()
 				: await sharedRuntime(pi);
 			const agentDir = getAgentDir();
-			const settingsManager = pi.SettingsManager.create(launch.cwd, agentDir);
+			const settingsManager = pi.SettingsManager.create(launch.cwd, agentDir, { projectTrusted: false });
 			// Foreground children share Pi's global theme with the parent, so reinitializing it
 			// would overwrite the parent's active light/dark appearance. Detached runners have
 			// no initialized theme and must initialize one for headless extension renderers.
@@ -326,8 +330,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noPromptTemplates: true,
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
-				additionalExtensionPaths: launch.extensionPaths,
-				extensionFactories: launch.hooks,
+				additionalExtensionPaths: [...launch.extensionPaths, ...(!launch.runtime.capabilityCeiling?.denyExtensions ? ["builtin:mcp", "builtin:codemode", "builtin:tool_search"] : [])],
+				extensionFactories: [...launch.hooks, ...nativeChildExtensions(pi, launch)],
 				extensionsOverride: prioritizeChildPromptRuntime,
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
@@ -336,7 +340,9 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				const requiredPaths = new Set((launch.requiredExtensions ?? []).map(({ path }) => path));
 				applyProcessEnv(launch.processEnv);
 				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
-				await loader.reload();
+				await loader.reload(typeof pi.ProjectTrustStore === "function" ? {
+					resolveProjectTrust: ({ extensionsResult }) => resolveChildProjectTrust(pi, launch, settingsManager, agentDir, extensionsResult),
+				} : undefined);
 				const loadErrors = requiredPaths.size > 0
 					? loader.getExtensions().errors.filter(({ path }) => requiredPaths.has(path)) : [];
 				if (loadErrors.length > 0) throw new Error(`Required child extension failed to load: ${loadErrors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`);
@@ -369,7 +375,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					modelRuntime,
 					...(resolvedModel?.model ? { model: resolvedModel.model } : {}),
 					...(resolvedModel?.thinkingLevel ? { thinkingLevel: resolvedModel.thinkingLevel } : {}),
-					...(launch.tools ? { tools: launch.tools } : {}),
+					...(launch.tools && !launch.tools.some(tool => tool.endsWith("__*")) ? { tools: launch.tools } : {}),
 					...(launch.excludeTools?.length ? { excludeTools: launch.excludeTools } : {}),
 					resourceLoader: loader,
 					sessionManager,
@@ -410,8 +416,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const child: ChildSession = {
 				subscribe: (listener) => session.subscribe((event) => listener(event as unknown as ChildSessionEvent)),
 				prompt: (text) => session.prompt(text),
-				steer: (text) => session.steer(text),
-				followUp: (text) => session.followUp(text),
+				steer: async (text) => { await session.steer(text); },
+				followUp: async (text) => { await session.followUp(text); },
 				abort: () => session.abort(),
 				hasQueuedMessages: () => session.agent?.hasQueuedMessages?.() === true,
 				dispose: () => {

@@ -193,9 +193,9 @@ function withHostPackageRoot(manifest: Record<string, unknown> | string, run: ()
 }
 
 describe("host dynamic tool support detection", () => {
-	it("compares the host version against the 0.86.1 floor", () => {
+	it("compares the host version against the 0.99.0 floor", () => {
 		for (const [version, supported] of [
-			["0.85.9", false], ["0.86.0", false], ["0.86.1", true], ["0.87.0", true], ["1.0.0", true],
+			["0.85.9", false], ["0.86.0", false], ["0.86.1", false], ["0.87.0", false], ["0.98.9", false], ["0.99.0", true], ["0.99.1", true], ["1.0.0", true],
 			["0.86", false], ["0.86.1-rc.1", false], ["0.87.0-beta.2", false], ["v0.87.0", false], ["current", false],
 		] as const) {
 			assert.equal(supportsMinimumVersion(version), supported, `version ${version}`);
@@ -206,15 +206,15 @@ describe("host dynamic tool support detection", () => {
 		const hostApi = { getAllTools() {}, getActiveTools() {}, setActiveTools() {} } as any;
 		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE, version: "0.86.0" }, () => {
 			const reason = unsupportedDynamicToolsReason(hostApi);
-			assert.match(reason ?? "", /requires Pi 0\.86\.1 or newer/);
+			assert.match(reason ?? "", /requires Pi 0\.99\.0 or newer/);
 			assert.match(reason ?? "", /detected 0\.86\.0 in .*pi-subagents-host-root-/);
 		});
-		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE, version: "0.88.0" }, () => {
+		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE, version: "0.99.1" }, () => {
 			assert.equal(unsupportedDynamicToolsReason(hostApi), undefined);
 		});
 	});
 
-	it("accepts a validated 0.87 Bun bin/share host image", () => {
+	it("accepts a validated 0.99 Bun bin/share host image", () => {
 		const hostApi = { getAllTools() {}, getActiveTools() {}, setActiveTools() {} } as any;
 		const manifestPath = "/synthetic-host/share/pi-coding-agent/package.json";
 		assert.equal(unsupportedDynamicToolsReason(hostApi, {
@@ -226,7 +226,7 @@ describe("host dynamic tool support detection", () => {
 			realpathSync: (value) => value,
 			existsSync: (value) => value === manifestPath,
 			readFileSync: (value) => value === manifestPath
-				? JSON.stringify({ name: PI_CODING_AGENT_PACKAGE, version: "0.87.0" })
+				? JSON.stringify({ name: PI_CODING_AGENT_PACKAGE, version: "0.99.1" })
 				: (() => { throw new Error(`unexpected read: ${value}`); })(),
 		}), undefined);
 	});
@@ -238,7 +238,7 @@ describe("host dynamic tool support detection", () => {
 		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE }, () => {
 			assert.match(unsupportedDynamicToolsReason(hostApi) ?? "", /has no version/);
 		});
-		withHostPackageRoot({ name: "@someone-else/tool", version: "0.88.0" }, () => {
+		withHostPackageRoot({ name: "@someone-else/tool", version: "0.99.1" }, () => {
 			const reason = unsupportedDynamicToolsReason(hostApi) ?? "";
 			assert.match(reason, /is not @earendil-works\/pi-coding-agent/);
 			assert.match(reason, /PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT override/);
@@ -278,7 +278,7 @@ describe("host dynamic tool support detection", () => {
 		assert.ok(broken.active().includes("subagent"));
 
 		let supported!: ReturnType<typeof createRuntime>;
-		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE, version: "0.88.0" }, () => { supported = createRuntime(); });
+		withHostPackageRoot({ name: PI_CODING_AGENT_PACKAGE, version: "0.99.1" }, () => { supported = createRuntime(); });
 		await supported.emit("session_start", { type: "session_start", reason: "startup" });
 		assert.ok(supported.tools.has("subagents_enable"));
 		assert.equal(supported.active().includes("subagent"), false);

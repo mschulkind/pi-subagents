@@ -5,20 +5,6 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
-import { MCP_RUNTIME_SNAPSHOT_EVENT, MCP_RUNTIME_SNAPSHOT_VERSION, type McpRuntimeSnapshotHost } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
-
-/** A parent whose pi-mcp-adapter answers snapshot requests for one runtime-only server. */
-function runtimeSnapshotHost(serverName: string): McpRuntimeSnapshotHost {
-	return {
-		events: {
-			emit(event, request) {
-				if (event !== MCP_RUNTIME_SNAPSHOT_EVENT || request.version !== MCP_RUNTIME_SNAPSHOT_VERSION || request.name !== serverName) return;
-				request.result = { ok: true, snapshot: { name: serverName, runtime: true, persisted: false, definition: { command: "node", args: ["server.js"] } } };
-			},
-		},
-	};
-}
-
 describe("child tool plan", () => {
 	it("does not grant watchdog_diff unless an agent explicitly requests it", () => {
 		for (const agentName of ["worker", "scout", "project-reviewer"]) {
@@ -29,16 +15,9 @@ describe("child tool plan", () => {
 		assert.deepEqual(bundledReviewer.effectiveToolAllowlist, ["read", "watchdog_diff", "contact_supervisor"]);
 	});
 
-	it("fails a launch that selects MCP tools from the adapter's runtime snapshot", () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-runtime-mcp-"));
-		try {
-			assert.throws(
-				() => resolvePiLaunchToolPlan({ tools: ["read"], mcpDirectTools: ["runtime-only/search"], cwd, agentName: "browser", runtimeSnapshotHost: runtimeSnapshotHost("runtime-only") }),
-				/cannot be provided to in-process children; MCP tools must come from an ambient adapter extension in a background child/,
-			);
-		} finally {
-			fs.rmSync(cwd, { recursive: true, force: true });
-		}
+	it("resolves native runtime server selectors without an adapter snapshot", () => {
+		const plan = resolvePiLaunchToolPlan({ tools: ["read"], mcpDirectTools: ["runtime-only/search"] });
+		assert.deepEqual(plan.effectiveMcpTools, ["mcp__runtime-only__search"]);
 	});
 });
 

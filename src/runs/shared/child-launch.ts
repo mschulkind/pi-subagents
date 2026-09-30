@@ -37,9 +37,6 @@ import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 
-/** Environment variable pi-mcp-adapter reads for the tools a child may expose. */
-export const MCP_DIRECT_TOOLS_ENV = "MCP_DIRECT_TOOLS";
-
 /**
  * The parts of the launching executor's own child runtime that a child it
  * launches inherits. Serialized into the background runner config; the
@@ -157,13 +154,9 @@ function inheritedCapabilityCeiling(inherited: InheritedChildRuntime | undefined
 }
 
 /** Environment values external child extensions read; only the runner applies them. */
-function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaunchToolPlan): Record<string, string | undefined> {
+function childProcessEnv(input: BuildInProcessChildLaunchInput): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = {};
 	env[PI_SUBAGENT_EXTENSION_BINDINGS_ENV] = encodeExtensionBindings(input.extensionBindings);
-	if (!toolPlan.capabilityCeiling && input.mcpDirectTools?.length) env[MCP_DIRECT_TOOLS_ENV] = input.mcpDirectTools.join(",");
-	else if (toolPlan.capabilityCeiling && toolPlan.effectiveMcpSelections.length && !toolPlan.capabilityCeiling.denyExtensions) {
-		env[MCP_DIRECT_TOOLS_ENV] = toolPlan.effectiveMcpSelections.map((selection) => selection.selector).join(",");
-	} else env[MCP_DIRECT_TOOLS_ENV] = "__none__";
 	return env;
 }
 
@@ -316,12 +309,13 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		storage: childStorage(input),
 		...(input.model ? { model: input.model } : {}),
 		...(toolPlan.explicitToolAllowlist ? { tools: toolPlan.effectiveToolAllowlist } : {}),
-		...(!toolPlan.explicitToolAllowlist && toolPlan.excludeTools.length > 0 ? { excludeTools: toolPlan.excludeTools } : {}),
+		...(toolPlan.excludeTools.length > 0 ? { excludeTools: toolPlan.excludeTools } : {}),
 		extensionPaths,
+		mcpSelections: toolPlan.effectiveMcpSelections,
 		requiredExtensions: toolPlan.requiredExtensions,
 		ambientExtensions,
 		hooks: capturedHooks.hooks,
-		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : {}),
+		...(input.host === "runner" ? { processEnv: childProcessEnv(input) } : {}),
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,
