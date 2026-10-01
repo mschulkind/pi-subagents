@@ -9,7 +9,7 @@ import { inlineWorkflowRenderKey, renderWidget, setInlineWorkflowCoverage } from
 
 const theme = { fg: (_name: string, text: string) => text, bg: (_name: string, text: string) => text, bold: (text: string) => text };
 type Mounted = { render(width: number): string[]; dispose?(): void };
-function harness(maxAgentRows = 6, inspector: () => Promise<void> = async () => {}) {
+function harness(maxAgentRows = 6, inspector: () => Promise<void> = async () => {}, detailMode: "compact" | "detailed" = "compact") {
 	const job: AsyncJobState = { asyncId: "workflow", asyncDir: "/tmp/workflow", mode: "workflow", status: "running", startedAt: 1_000,
 		steps: [{ workflowKey: "lane-a", agent: "unique-worker", status: "running" }] };
 	const state = { asyncJobs: new Map([[job.asyncId, job]]), foregroundControls: new Map() } as unknown as SubagentState;
@@ -22,7 +22,7 @@ function harness(maxAgentRows = 6, inspector: () => Promise<void> = async () => 
 			mounted.get(key)?.dispose?.(); mounted.delete(key);
 			if (factory) mounted.set(key, factory(tui, theme));
 		} } } as unknown as ExtensionContext;
-	const fleet = new SubagentFleetStatus(state, inspector, { refreshMs: 60_000, maxAgentRows, onWorkflowCoverageChange: setInlineWorkflowCoverage });
+	const fleet = new SubagentFleetStatus(state, inspector, { refreshMs: 60_000, maxAgentRows, detailMode, onWorkflowCoverageChange: setInlineWorkflowCoverage });
 	fleet.setContext(ctx);
 	renderWidget(ctx, [job]);
 	return { job, state, ctx, fleet, mounted, get requests() { return requests; }, setExpanded(value: boolean) { expanded = value; },
@@ -307,4 +307,30 @@ it("restores detail for suspension, inspector transitions, UI replacement, and h
 			assert.match(other.asyncText(), /unique-worker/);
 		} finally { other.close(); }
 	} finally { h.close(); }
+});
+
+// Pi renders the above-editor async widget before the below-editor Fleet roster.
+// Checking only after both renders misses the expanded intermediate frame.
+it("does not reflow duplicate workflow rows on passive Fleet clock and usage refreshes", () => {
+	const originalNow = Date.now;
+	let now = 2_000;
+	Date.now = () => now;
+	const h = harness(6, async () => {}, "detailed");
+	try {
+		const [alpha] = materialize(h);
+		alpha.steps = [{ agent: "alpha-worker", status: "running", tokens: { input: 10, output: 2, total: 12 } }];
+		h.fleet.refresh(); h.roster();
+		const initialLines = h.asyncText().split("\n").length;
+		for (let tick = 0; tick < 6; tick++) {
+			now += 500;
+			alpha.steps[0]!.tokens!.total += 100;
+			h.fleet.refresh();
+			renderWidget(h.ctx, [...h.state.asyncJobs.values()]);
+			h.resetRequests();
+			assert.equal(h.asyncText().split("\n").length, initialLines, "async-first render must not expand duplicate rows");
+			assert.doesNotMatch(h.asyncText(), /alpha-worker/);
+			assert.match(h.roster(), /alpha-worker/, "passive detailed rows remain visible");
+			assert.equal(h.requests, 0, "Fleet rendering must not schedule a corrective coverage repaint");
+		}
+	} finally { h.close(); Date.now = originalNow; }
 });

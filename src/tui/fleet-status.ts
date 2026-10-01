@@ -553,6 +553,7 @@ export class SubagentFleetStatus {
 	private selectedKey = "main";
 	private inspectorOpen = false;
 	private lastRenderKey = "";
+	private lastCoverageKey = "";
 	private entries: FleetStatusEntry[] = [];
 	private workflowSnapshots = new Map<string, { snapshot: string; childRows: Set<string> }>();
 	private readonly onWorkflowCoverageChange: FleetStatusOptions["onWorkflowCoverageChange"];
@@ -680,7 +681,17 @@ export class SubagentFleetStatus {
 		}
 
 		const renderKey = this.getRenderKey();
-		if (!this.showsDetails() || renderKey !== this.lastRenderKey) this.clearWorkflowCoverage();
+		// Coverage is about visible row ownership, not animation or live usage.
+		// Clearing it for each clock/token update expands the earlier async widget
+		// for one frame until this below-editor roster renders and covers it again.
+		const coverageKey = JSON.stringify([
+			this.selectedKey,
+			fleetTreeRows(this.entries.filter((entry) => !entry.surface)).map((row) =>
+				row.kind === "owner" || row.kind === "child" ? [row.kind, row.entry.key] : [row.kind, row.ownerKey]),
+			[...this.workflowSnapshots].map(([key, value]) => [key, value.snapshot]),
+		]);
+		if (!this.showsDetails() || coverageKey !== this.lastCoverageKey) this.clearWorkflowCoverage();
+		this.lastCoverageKey = coverageKey;
 		if (!this.widgetRegistered) {
 			ctx.ui.setWidget(FLEET_STATUS_WIDGET_KEY, (tui, theme) => {
 				this.tui = tui;
@@ -1139,6 +1150,7 @@ export class SubagentFleetStatus {
 	}
 
 	private clearWorkflowCoverage(): void {
+		this.lastCoverageKey = "";
 		if (this.ui) this.onWorkflowCoverageChange?.(this.ui, new Map());
 	}
 }
