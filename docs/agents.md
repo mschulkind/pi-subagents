@@ -377,6 +377,26 @@ Hosts can import `registerRequiredChildExtensions` from `pi-subagents/required-c
 
 Required paths follow ordinary extension resolution and survive agent defaults and `extensions: []` across native foreground, detached, nested, and recovery launches. A `capabilityCeiling.denyExtensions` conflict or required load/provider-registration failure rejects before model resolution. External runners are excluded, and status/watch paths do not query the registry.
 
+### Optional child extensions
+
+An optional child extension is an observer, such as a metrics recorder, that a host adds to every child it creates. Unlike required host extensions, it can never fail a launch. The registry is a cross-package convention shared with pi-dynamic-workflows, so any extension can register without importing pi-subagents:
+
+```ts
+const key = Symbol.for("pi.optional-child-extensions.v1");
+const registry = (globalThis[key] ??= new Map());
+registry.set("my-recorder", {
+  paths: { "pi-subagents": "/abs/child-subagent.ts", "pi-dynamic-workflows": "/abs/child-workflow.ts" },
+  path: "/abs/child.ts", // used by a host the entry does not name in `paths`
+});
+```
+
+- **Which file.** pi-subagents loads `paths["pi-subagents"] ?? path`. An entry naming only other hosts is skipped.
+- **Which children.** Native foreground children, including nested ones, which run in the parent process. Detached background runners and pane-native remote children never take entries: a runner is its own pi process, where ambient extensions record instead.
+- **After every restriction.** Entries are added after the tool plan, so `capabilityCeiling.denyExtensions`, `extensions: []`, and agent defaults do not remove them. They are not part of the launch contract, `launchResolvedExtensions`, or the tool plan.
+- **Deduplication.** An entry whose realpath matches a path the child already loads, or an earlier entry, is skipped.
+- **Fail-open.** A non-Map registry, a malformed entry, a relative or missing path, a factory or import error, and a throwing or rejecting handler are reported through the child's extension-error channel (the child transcript's stderr) and change nothing else. Handlers are wrapped so that even a throwing `tool_call` handler, which pi itself does not isolate, cannot block a tool.
+- **Timing.** Entries are read when the launch is built and load with the child's other extensions, before `session_start`.
+
 Successful completion is determined by observable gates such as process outcome, required outputs, explicit acceptance, verification commands, independent review, and staged-index integrity. Best-effort mutation observations remain diagnostic: unchanged or unknown evidence does not fail a run, and observed changes do not prove correctness.
 
 ## Per-agent persistent memory

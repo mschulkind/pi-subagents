@@ -36,6 +36,7 @@ import { createCapturedChildHooks, withChildSessionErrorReporting } from "./chil
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
+import { PI_SUBAGENTS_OPTIONAL_HOST, resolveOptionalChildExtensions } from "../../shared/optional-child-extensions.ts";
 
 /**
  * The parts of the launching executor's own child runtime that a child it
@@ -292,6 +293,14 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 
 	const extensionPaths = toolPlan.extensionArgs.filter((extensionPath) => !isSubagentRuntimeExtensionPath(extensionPath));
 	const ambientExtensions = input.host === "runner" && !toolPlan.disableAmbientExtensions;
+	// Optional observers (optional-child-extensions.ts) are added after the tool
+	// plan, so no ceiling, denyExtensions, or `extensions: []` removes them. Only
+	// parent-hosted local children take them: a detached runner is its own pi
+	// process whose ambient extensions record there, and a pane-native remote
+	// child cannot load local paths.
+	const optional = input.host === "parent" && !input.machine
+		? resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST, extensionPaths, input.cwd)
+		: undefined;
 	const launchResolvedExtensions = projectLaunchResolvedChildExtensions({
 		runtimeExtensions: toolPlan.runtimeExtensions,
 		configuredExtensions: toolPlan.configuredExtensions,
@@ -313,6 +322,8 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		extensionPaths,
 		mcpSelections: toolPlan.effectiveMcpSelections,
 		requiredExtensions: toolPlan.requiredExtensions,
+		...(optional?.extensions.length ? { optionalExtensions: optional.extensions } : {}),
+		...(optional?.diagnostics.length ? { optionalExtensionDiagnostics: optional.diagnostics } : {}),
 		ambientExtensions,
 		hooks: capturedHooks.hooks,
 		...(input.host === "runner" ? { processEnv: childProcessEnv(input) } : {}),

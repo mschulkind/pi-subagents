@@ -20,6 +20,7 @@ import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot, resolvePiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
+import { isolateOptionalExtensionHandlers, type OptionalChildExtension } from "../../shared/optional-child-extensions.ts";
 import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 
 export interface ChildSessionEvent {
@@ -73,6 +74,15 @@ export interface ChildSessionLaunch {
 	extensionPaths: string[];
 	/** Canonical required paths and safe evidence identities for fail-closed loading. */
 	requiredExtensions?: RequiredChildExtensionSnapshot;
+	/**
+	 * Observer extensions from the optional child-extension registry
+	 * (optional-child-extensions.ts), loaded after `extensionPaths` regardless of
+	 * capability ceilings. Fail-open: a load error or a throwing handler is
+	 * reported through `onExtensionError` and never fails the launch.
+	 */
+	optionalExtensions?: readonly OptionalChildExtension[];
+	/** Why registry entries were skipped for this child; reported, never fatal. */
+	optionalExtensionDiagnostics?: readonly string[];
 	/**
 	 * Discover the ambient extensions (agent dir, project, settings) the way a
 	 * `pi` process would. False loads only `extensionPaths` and `hooks`.
@@ -190,6 +200,26 @@ function prioritizeChildPromptRuntime<T extends { extensions: Array<{ path: stri
 	if (!promptRuntime) return result;
 	extensions.unshift(promptRuntime);
 	return { ...result, extensions };
+}
+
+function isOptionalExtensionPath(extensionPath: string | undefined, optionalRealPaths: ReadonlySet<string>): boolean {
+	if (!extensionPath || optionalRealPaths.size === 0) return false;
+	if (optionalRealPaths.has(extensionPath)) return true;
+	try {
+		return optionalRealPaths.has(fs.realpathSync(extensionPath));
+	} catch {
+		return false;
+	}
+}
+
+/** Wrap the handlers of every loaded optional extension so none can fail the child. */
+function isolateOptionalExtensions<T extends { extensions: Array<{ path: string; resolvedPath?: string; handlers: Map<string, Array<(...args: never[]) => unknown>> }> }>(result: T, optionalRealPaths: ReadonlySet<string>, onError: ((error: ChildSessionExtensionError) => void) | undefined): T {
+	if (optionalRealPaths.size === 0) return result;
+	for (const extension of result.extensions) {
+		if (!isOptionalExtensionPath(extension.resolvedPath ?? extension.path, optionalRealPaths) && !isOptionalExtensionPath(extension.path, optionalRealPaths)) continue;
+		isolateOptionalExtensionHandlers(extension, (event, error) => onError?.({ extensionPath: extension.path, event, error }));
+	}
+	return result;
 }
 
 /** One launch at a time from env application through `session_start`, so parallel launches never observe each other's `processEnv` while their extensions load and start. */
@@ -321,6 +351,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const themeKey = Symbol.for("@earendil-works/pi-coding-agent:theme");
 			const themeInitialized = Boolean((globalThis as Record<symbol, unknown>)[themeKey]);
 			if (!themeInitialized && typeof pi.initTheme === "function") pi.initTheme(settingsManager.getTheme());
+			const optionalPaths = (launch.optionalExtensions ?? []).map(({ path }) => path);
+			const optionalRealPaths = new Set((launch.optionalExtensions ?? []).flatMap(({ path, realPath }) => [path, realPath]));
 			const loader = new pi.DefaultResourceLoader({
 				cwd: launch.cwd,
 				agentDir,
@@ -330,22 +362,29 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noPromptTemplates: true,
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
-				additionalExtensionPaths: [...launch.extensionPaths, ...(!launch.runtime.capabilityCeiling?.denyExtensions ? ["builtin:mcp", "builtin:codemode", "builtin:tool_search"] : [])],
+				additionalExtensionPaths: [...launch.extensionPaths, ...(!launch.runtime.capabilityCeiling?.denyExtensions ? ["builtin:mcp", "builtin:codemode", "builtin:tool_search"] : []), ...optionalPaths],
 				extensionFactories: [...launch.hooks, ...nativeChildExtensions(pi, launch)],
-				extensionsOverride: prioritizeChildPromptRuntime,
+				extensionsOverride: (result) => prioritizeChildPromptRuntime(isolateOptionalExtensions(result, optionalRealPaths, launch.onExtensionError)),
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
 			});
 			const open = async () => {
 				const requiredPaths = new Set((launch.requiredExtensions ?? []).map(({ path }) => path));
 				applyProcessEnv(launch.processEnv);
-				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
+				for (const diagnostic of launch.optionalExtensionDiagnostics ?? []) launch.onExtensionError?.({ extensionPath: "<optional-child-extensions>", event: "load", error: new Error(diagnostic) });
+				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length || optionalPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
 				await loader.reload(typeof pi.ProjectTrustStore === "function" ? {
 					resolveProjectTrust: ({ extensionsResult }) => resolveChildProjectTrust(pi, launch, settingsManager, agentDir, extensionsResult),
 				} : undefined);
 				const loadErrors = requiredPaths.size > 0
 					? loader.getExtensions().errors.filter(({ path }) => requiredPaths.has(path)) : [];
 				if (loadErrors.length > 0) throw new Error(`Required child extension failed to load: ${loadErrors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`);
+				// Optional extensions fail open: their load errors are diagnostics only.
+				if (optionalRealPaths.size > 0) {
+					for (const { path: errorPath, error } of loader.getExtensions().errors) {
+						if (isOptionalExtensionPath(errorPath, optionalRealPaths)) launch.onExtensionError?.({ extensionPath: errorPath, event: "load", error: new Error(`optional child extension not loaded: ${error}`) });
+					}
+				}
 				const queued = flushQueuedProviderRegistrations(loader, modelRuntime, launch.onExtensionError, requiredPaths);
 				const inherited = launch.parentProviderRegistry
 					? inheritParentProviders(modelRuntime, launch.parentProviderRegistry, queued.claimedProviderIds, launch.onExtensionError)

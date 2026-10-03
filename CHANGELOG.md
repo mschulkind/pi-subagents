@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Optional child extensions: observer extensions registered on `globalThis[Symbol.for("pi.optional-child-extensions.v1")]` load into every native foreground child after capability ceilings, `denyExtensions`, and `extensions: []`, deduplicated by realpath, and fail open on every error. See [Optional child extensions](docs/agents.md#optional-child-extensions).
+
 ### Fixed
 
 - `subagent_supervisor` `pending` now shows each request's question text, so a parent that missed the request notice can still read and answer it ([#2460](https://github.com/nicobailon/pi-subagents/issues/2460)).
