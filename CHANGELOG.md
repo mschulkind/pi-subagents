@@ -4,7 +4,7 @@
 
 ### Added
 
-- Optional child extensions: observer extensions registered on `globalThis[Symbol.for("pi.optional-child-extensions.v1")]` load into every native foreground child after capability ceilings, `denyExtensions`, and `extensions: []`, deduplicated by realpath, and fail open on every error, including a registry that throws when read. See [Optional child extensions](docs/agents.md#optional-child-extensions).
+- Optional child extensions: observer extensions registered on `globalThis[Symbol.for("pi.optional-child-extensions.v1")]` load into every native foreground child after capability ceilings, `denyExtensions`, and `extensions: []`, deduplicated by realpath, and fail open on every error, including a registry that throws when read and handlers registered later through `pi.on`. See [Optional child extensions](docs/agents.md#optional-child-extensions).
 
 ### Fixed
 

@@ -199,4 +199,75 @@ describe("isolateOptionalExtensionHandlers", () => {
 		assert.equal(extension.handlers.get("provider_stream_event")![0]!(), undefined, "a sync handler stays sync");
 		assert.deepEqual(reported, ["tool_call: sync boom", "message_end: async boom"]);
 	});
+
+	/**
+	 * pi's `on()` and the unsubscribe it returns, as pi 1.0.1 writes them
+	 * (core/extensions/loader.js): `get`, `push`, `set`; then `get`, `indexOf`,
+	 * `splice`, `delete`. The runner reads `handlers.get(event)?.slice()`.
+	 */
+	function piOn(extension: { handlers: Map<string, Array<(...args: never[]) => unknown>> }, event: string, handler: (...args: never[]) => unknown): () => void {
+		const registeredHandler = (...args: never[]) => handler(...args);
+		const list = extension.handlers.get(event) ?? [];
+		list.push(registeredHandler);
+		extension.handlers.set(event, list);
+		return () => {
+			const handlers = extension.handlers.get(event);
+			if (!handlers) return;
+			const index = handlers.indexOf(registeredHandler);
+			if (index === -1) return;
+			handlers.splice(index, 1);
+			if (handlers.length === 0) extension.handlers.delete(event);
+		};
+	}
+	const snapshot = (extension: { handlers: Map<string, Array<(...args: never[]) => unknown>> }, event: string) => extension.handlers.get(event)?.slice() ?? [];
+
+	it("isolates handlers registered after isolation, as pi.on does from session_start", async () => {
+		const reported: string[] = [];
+		const extension = { path: "/x/observer.mjs", handlers: new Map<string, Array<(...args: never[]) => unknown>>() };
+		piOn(extension, "session_start", () => {
+			piOn(extension, "tool_call", () => { throw new Error("late tool_call exploded"); });
+			piOn(extension, "message_end", async () => { throw new Error("late message_end exploded"); });
+		});
+		isolateOptionalExtensionHandlers(extension, (event, error) => reported.push(`${event}: ${(error as Error).message}`));
+		for (const handler of snapshot(extension, "session_start")) await handler();
+		assert.equal(snapshot(extension, "tool_call").length, 1);
+		for (const handler of snapshot(extension, "tool_call")) assert.equal(handler(), undefined, "a late tool_call cannot throw into the tool");
+		for (const handler of snapshot(extension, "message_end")) assert.equal(await handler(), undefined);
+		assert.deepEqual(reported, ["tool_call: late tool_call exploded", "message_end: late message_end exploded"]);
+		// One wrapper per original handler, so a handler read twice is the same function.
+		assert.equal(extension.handlers.get("tool_call")![0], extension.handlers.get("tool_call")![0]);
+		// The map still holds pi's own arrays of originals.
+		const raw = Map.prototype.get.call(extension.handlers, "tool_call") as Array<() => unknown>;
+		assert.throws(() => raw[0]!(), /late tool_call exploded/);
+	});
+
+	it("keeps pi's unsubscribe working, before and after isolation", () => {
+		const fired: string[] = [];
+		const extension = { path: "/x/observer.mjs", handlers: new Map<string, Array<(...args: never[]) => unknown>>() };
+		const offEarly = piOn(extension, "message_end", () => { fired.push("early"); });
+		const offKept = piOn(extension, "message_end", () => { fired.push("kept"); });
+		isolateOptionalExtensionHandlers(extension, () => {});
+		const offLate = piOn(extension, "message_end", () => { fired.push("late"); });
+		const offOnly = piOn(extension, "turn_end", () => { fired.push("only"); });
+		offEarly();
+		offLate();
+		offOnly();
+		for (const handler of snapshot(extension, "message_end")) handler();
+		assert.deepEqual(fired, ["kept"], "off() removed the handlers it registered, and only those");
+		assert.equal(extension.handlers.has("turn_end"), false, "the last off() deletes the event");
+		offKept();
+		assert.equal(extension.handlers.has("message_end"), false);
+		// Isolating twice wraps once.
+		isolateOptionalExtensionHandlers(extension, () => {});
+		piOn(extension, "message_end", () => { fired.push("again"); });
+		const [wrapped] = snapshot(extension, "message_end");
+		wrapped!();
+		assert.deepEqual(fired, ["kept", "again"]);
+	});
+
+	it("survives a reporter that throws", () => {
+		const extension = { path: "/x/observer.mjs", handlers: new Map<string, Array<(...args: never[]) => unknown>>([["tool_call", [() => { throw new Error("boom"); }]]]) };
+		isolateOptionalExtensionHandlers(extension, () => { throw new Error("reporter broke"); });
+		assert.equal(extension.handlers.get("tool_call")![0]!(), undefined);
+	});
 });

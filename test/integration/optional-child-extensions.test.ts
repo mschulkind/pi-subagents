@@ -185,6 +185,36 @@ describe("optional child extensions in a real foreground child", () => {
 		for (const event of ["session_start", "message_end", "tool_call", "tool_result"]) assert.match(text, new RegExp(`observer ${event} exploded`));
 	});
 
+	it("isolates handlers registered later through pi.on, and pi's off() still unsubscribes", async () => {
+		// Registers late, from session_start: off() for an early handler, then a
+		// throwing tool_call. Neither existed when the loader result was isolated.
+		const late = path.join(dir, "late.mjs");
+		fs.writeFileSync(late, `export default function (pi) {
+	const log = globalThis[Symbol.for(${JSON.stringify(LOG_KEY)})];
+	log.loads += 1;
+	const off = pi.on("message_end", () => { log.events.push({ event: "unsubscribed message_end" }); });
+	pi.on("session_start", () => {
+		off();
+		pi.on("tool_call", () => { throw new Error("late tool_call exploded"); });
+		pi.on("message_end", () => { log.events.push({ event: "late message_end" }); });
+	});
+}
+`);
+		register({ late: { path: late } });
+		const { errors, messages } = await runChild({ tools: ["ls"] }, [
+			fauxAssistantMessage(fauxToolCall("ls", { path: "." }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		assert.equal(log.loads, 1);
+		const toolResult = messages.find((message) => message.role === "toolResult") as { isError?: boolean } | undefined;
+		assert.ok(toolResult, "the tool ran");
+		assert.equal(toolResult.isError, false, "a late throwing tool_call observer did not block the tool");
+		assert.match(errorText(errors), /late\.mjs tool_call late tool_call exploded/);
+		const events = log.events.map(({ event }) => event);
+		assert.equal(events.includes("unsubscribed message_end"), false, "off() removed the handler");
+		assert.ok(events.includes("late message_end"), "a late handler still fires");
+	});
+
 	it("loads an observer once when the agent already names it through a symlink", async () => {
 		const link = path.join(dir, "observer-link.mjs");
 		fs.symlinkSync(observer, link);
