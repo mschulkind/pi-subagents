@@ -36,7 +36,7 @@ import { createCapturedChildHooks, withChildSessionErrorReporting } from "./chil
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
-import { PI_SUBAGENTS_OPTIONAL_HOST, resolveOptionalChildExtensions } from "../../shared/optional-child-extensions.ts";
+import { type OptionalChildExtensionResolution, PI_SUBAGENTS_OPTIONAL_HOST, resolveOptionalChildExtensions } from "../../shared/optional-child-extensions.ts";
 
 /**
  * The parts of the launching executor's own child runtime that a child it
@@ -174,6 +174,15 @@ function childStorage(input: BuildInProcessChildLaunchInput): ChildSessionStorag
 	return { kind: "default" };
 }
 
+/** Optional observers never fail a launch. The resolver is total; this guards the call site too. */
+function resolveOptionalChildExtensionsOrNothing(extensionPaths: readonly string[], cwd: string): OptionalChildExtensionResolution | undefined {
+	try {
+		return resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST, extensionPaths, cwd);
+	} catch {
+		return undefined;
+	}
+}
+
 export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput): InProcessChildLaunch {
 	const requiredExtensions = input.requiredExtensions ?? input.inherited?.requiredExtensions ?? resolveRequiredChildExtensions(input.parentSessionId);
 	const agentCapabilityCeiling: ResolvedSubagentCapabilityCeiling | undefined = input.descendantAllowedAgents === undefined
@@ -299,7 +308,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	// process whose ambient extensions record there, and a pane-native remote
 	// child cannot load local paths.
 	const optional = input.host === "parent" && !input.machine
-		? resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST, extensionPaths, input.cwd)
+		? resolveOptionalChildExtensionsOrNothing(extensionPaths, input.cwd)
 		: undefined;
 	const launchResolvedExtensions = projectLaunchResolvedChildExtensions({
 		runtimeExtensions: toolPlan.runtimeExtensions,

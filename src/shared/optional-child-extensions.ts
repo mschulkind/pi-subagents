@@ -65,7 +65,27 @@ function canonicalPath(spec: string, cwd: string): string {
 }
 
 function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	// A thrown value can be anything, including a null-prototype object that
+	// String() cannot convert, so describing it must not throw either.
+	try {
+		const text: unknown = error instanceof Error ? error.message : error;
+		return typeof text === "string" ? text : String(text);
+	} catch {
+		return "<unprintable error>";
+	}
+}
+
+/** A registry key as text. Keys can be anything a Map holds, including null-prototype objects. */
+function describeKey(key: unknown): string {
+	try {
+		return typeof key === "symbol" ? key.toString() : String(key);
+	} catch {
+		return "<unprintable key>";
+	}
+}
+
+function unreadable(error: unknown): OptionalChildExtensionResolution {
+	return { extensions: [], diagnostics: [`optional child extension registry is unreadable: ${describe(error)}`] };
 }
 
 /**
@@ -73,17 +93,33 @@ function describe(error: unknown): string {
  *
  * `loadedPaths` are the extension paths the child already loads; an optional
  * entry whose canonical path matches one of them, or an earlier entry, is
- * dropped so the same file never loads twice. Never throws.
+ * dropped so the same file never loads twice. Never throws: whatever another
+ * extension put in the registry, the worst outcome is a diagnostic.
  */
 export function resolveOptionalChildExtensions(host: string, loadedPaths: readonly string[] = [], cwd: string = process.cwd()): OptionalChildExtensionResolution {
+	try {
+		return resolveFromRegistry(host, loadedPaths, cwd);
+	} catch (error) {
+		return unreadable(error);
+	}
+}
+
+function resolveFromRegistry(host: string, loadedPaths: readonly string[], cwd: string): OptionalChildExtensionResolution {
 	let registry: unknown;
 	try {
 		registry = (globalThis as Record<PropertyKey, unknown>)[OPTIONAL_CHILD_EXTENSIONS_KEY];
 	} catch (error) {
-		return { extensions: [], diagnostics: [`optional child extension registry is unreadable: ${describe(error)}`] };
+		return unreadable(error);
 	}
 	if (registry === undefined) return EMPTY_RESOLUTION;
-	if (!(registry instanceof Map)) return { extensions: [], diagnostics: ["optional child extension registry ignored: it is not a Map"] };
+	let isMap: boolean;
+	try {
+		// A Proxy registry can throw from its getPrototypeOf trap.
+		isMap = registry instanceof Map;
+	} catch (error) {
+		return unreadable(error);
+	}
+	if (!isMap) return { extensions: [], diagnostics: ["optional child extension registry ignored: it is not a Map"] };
 
 	const seen = new Set<string>();
 	for (const loaded of loadedPaths) {
@@ -91,15 +127,17 @@ export function resolveOptionalChildExtensions(host: string, loadedPaths: readon
 	}
 	const extensions: OptionalChildExtension[] = [];
 	const diagnostics: string[] = [];
-	let entries: Array<[unknown, unknown]>;
+	let entries: unknown[];
 	try {
-		entries = [...registry.entries()];
+		entries = [...(registry as Map<unknown, unknown>).entries()];
 	} catch (error) {
-		return { extensions: [], diagnostics: [`optional child extension registry is unreadable: ${describe(error)}`] };
+		return unreadable(error);
 	}
-	for (const [key, entry] of entries) {
-		const id = String(key);
+	for (const item of entries) {
+		let id = "<unknown key>";
 		try {
+			const [key, entry] = item as [unknown, unknown];
+			id = describeKey(key);
 			if (!entry || typeof entry !== "object") {
 				diagnostics.push(`optional child extension '${id}' ignored: its entry is not an object`);
 				continue;

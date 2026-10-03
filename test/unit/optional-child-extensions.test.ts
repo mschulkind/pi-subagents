@@ -95,6 +95,32 @@ describe("optional child extension registry", () => {
 		}
 	});
 
+	it("never throws on registries that resist being read, and keeps the healthy entries", () => {
+		// A key String() cannot convert: one bad key must not hide the good entries.
+		setRegistry(new Map<unknown, unknown>([[Object.create(null), { path: observer }], ["good", { path: other }]]));
+		const nullKey = resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST);
+		assert.deepEqual(nullKey.extensions.map(({ id, path: p }) => [id, p]), [["<unprintable key>", observer], ["good", other]]);
+
+		// A Proxy registry whose getPrototypeOf trap throws defeats `instanceof Map`.
+		setRegistry(new Proxy(new Map(), { getPrototypeOf() { throw new Error("prototype trap"); } }));
+		const trapped = resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST);
+		assert.deepEqual(trapped.extensions, []);
+		assert.match(trapped.diagnostics[0] ?? "", /registry is unreadable: prototype trap/);
+
+		// An entry getter that throws a value String() cannot convert.
+		const nullThrower = { get path(): string { throw Object.create(null); } };
+		setRegistry(new Map<string, unknown>([["null-throw", nullThrower], ["good", { path: other }]]));
+		const thrown = resolveOptionalChildExtensions(PI_SUBAGENTS_OPTIONAL_HOST);
+		assert.deepEqual(thrown.extensions.map(({ id }) => id), ["good"]);
+		assert.match(thrown.diagnostics.join("\n"), /'null-throw' ignored: <unprintable error>/);
+
+		// And a launch built on any of them still succeeds.
+		setRegistry(new Proxy(new Map(), { getPrototypeOf() { throw Object.create(null); } }));
+		const launch = buildInProcessChildLaunch(baseInput());
+		assert.equal("optionalExtensions" in launch.session, false);
+		assert.match(launch.session.optionalExtensionDiagnostics?.[0] ?? "", /registry is unreadable: <unprintable error>/);
+	});
+
 	it("deduplicates by realpath against loaded paths and earlier entries", () => {
 		const link = path.join(dir, "link.mjs");
 		fs.symlinkSync(observer, link);
