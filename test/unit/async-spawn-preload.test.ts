@@ -47,7 +47,13 @@ test("executeAsyncSingle preloads all peer aliases before the selected runner lo
 			throw new Error("spawn boundary captured");
 		});
 		nodeModule.syncBuiltinESMExports();
-		for (const scenario of ["stable", "pre-chord", "missing-pre-chord"]) {
+		for (const scenario of ["stable", "pre-chord", "missing-pre-chord", "modern"]) {
+			if (scenario === "modern") {
+				for (const pkg of Object.keys(hostExports)) writeHostPackage(pkg);
+				fs.writeFileSync(path.join(host, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.0.0", exports: { ".": "./index.mjs" } }));
+				fs.writeFileSync(path.join(host, "node_modules", "@earendil-works/pi-agent-core", "package.json"), JSON.stringify({ name: "@earendil-works/pi-agent-core", version: "1.0.0", exports: { ".": "./index.mjs" } }));
+				delete expectedAliases["@earendil-works/pi-agent-core/node"];
+			}
 			if (scenario === "pre-chord") {
 				fs.writeFileSync(path.join(host, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.84.3", exports: { ".": "./index.mjs" } }));
 				fs.rmSync(path.join(host, "node_modules", "@earendil-works/chord"), { recursive: true });
@@ -68,7 +74,7 @@ test("executeAsyncSingle preloads all peer aliases before the selected runner lo
 				continue;
 			}
 			assert.match(result.content[0]!.text, /spawn boundary captured/);
-			assert.equal(spawn.mock.callCount(), scenario === "stable" ? 1 : 2);
+			assert.equal(spawn.mock.callCount(), scenario === "stable" ? 1 : scenario === "modern" ? 3 : 2);
 			const [command, args, options] = spawn.mock.calls.at(-1)!.arguments;
 			assert.ok(path.isAbsolute(command));
 			assert.equal(options.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV], host);

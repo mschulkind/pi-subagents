@@ -124,6 +124,44 @@ test("resolves pi-agent-core/node to its exact package export instead of appendi
 	}
 });
 
+test("Pi 1.0 does not require the retired agent-core/node export", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-modern-agent-core-"));
+	try {
+		const packages = new Map<string, Record<string, string>>();
+		for (const { pkg, subpath } of HOST_PEER_ALIASES) {
+			const exports = packages.get(pkg) ?? {};
+			exports[subpath] = `./${subpath.replaceAll("/", "-")}.mjs`;
+			packages.set(pkg, exports);
+		}
+		packages.set("@earendil-works/chord", { ".": "./index.mjs", "./context": "./context.mjs" });
+		for (const [pkg, exports] of packages) {
+			const dir = pkg === "@earendil-works/pi-coding-agent" ? root : path.join(root, "node_modules", pkg);
+			fs.mkdirSync(dir, { recursive: true });
+			if (pkg === "@earendil-works/pi-agent-core") delete exports["./node"];
+			fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: pkg, version: "1.0.0", exports }));
+			for (const target of Object.values(exports)) fs.writeFileSync(path.join(dir, target), "export {};\n");
+		}
+		const coreDir = path.join(root, "node_modules", "@earendil-works/pi-agent-core");
+		for (const version of ["1.0.0", "1.0.1+fork", "1.0.0-rc.1"]) {
+			fs.writeFileSync(path.join(coreDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-agent-core", version, exports: packages.get("@earendil-works/pi-agent-core") }));
+			const result = resolveHostPeerAliases(root);
+			assert.deepEqual(result.missing, [], version);
+			assert.equal(result.aliases["@earendil-works/pi-agent-core/node"], undefined);
+			assert.ok(result.aliases["@earendil-works/pi-agent-core"]);
+		}
+		// An old or unidentified package must not hide a broken required export.
+		for (const version of ["0.99.1", "unknown"]) {
+			fs.writeFileSync(path.join(coreDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-agent-core", version, exports: packages.get("@earendil-works/pi-agent-core") }));
+			assert.deepEqual(resolveHostPeerAliases(root).missing, ["@earendil-works/pi-agent-core/node"], version);
+		}
+		// A declared export remains required even on a modern package.
+		fs.writeFileSync(path.join(coreDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-agent-core", version: "1.0.0", exports: { ...packages.get("@earendil-works/pi-agent-core"), "./node": "./missing.mjs" } }));
+		assert.deepEqual(resolveHostPeerAliases(root).missing, ["@earendil-works/pi-agent-core/node"]);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 function writeFakeTypeboxPackage(typeboxDir: string): void {
 	fs.mkdirSync(typeboxDir, { recursive: true });
 	fs.writeFileSync(

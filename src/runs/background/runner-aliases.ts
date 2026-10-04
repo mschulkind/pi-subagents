@@ -144,6 +144,15 @@ export function resolveHostPeerAliases(piPackageRoot: string): { aliases: Record
 	for (const { specifier, pkg, subpath } of required) {
 		const packageDir = findPeerPackageDir(piPackageRoot, pkg, hostManifest?.name);
 		const target = packageDir ? resolvePackageSubpath(packageDir, subpath) : undefined;
+		// Pi 1.0 removed this legacy entry point. Preserve its exact alias when
+		// declared, and still reject broken old/unknown packages or missing files.
+		if (specifier === "@earendil-works/pi-agent-core/node" && packageDir && target === undefined) {
+			const coreManifest = readManifest(packageDir);
+			const major = typeof coreManifest?.version === "string" ? /^(\d+)\.\d+\.\d+(?:[-+].*)?$/.exec(coreManifest.version) : null;
+			const exports = coreManifest?.exports;
+			const declaresNode = exports !== null && typeof exports === "object" && Object.keys(exports).some((key) => key === "./node" || key.includes("*"));
+			if (major && Number(major[1]) >= 1 && !declaresNode) continue;
+		}
 		// Native loaders short-circuit resolution, so aliases must retain the real package's dependency scope.
 		if (target && fs.existsSync(target)) aliases[specifier] = fs.realpathSync(target);
 		else missing.push(specifier);
