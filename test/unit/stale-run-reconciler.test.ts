@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { writeAsyncResultFile, writePendingAsyncResultFile } from "../../src/runs/background/result-files.ts";
 import { finalizeProcessTerminal, initializeProcessTerminal, readProcessTerminal } from "../../src/runs/background/process-terminal.ts";
 import { checkPidLiveness, reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
+import { deliverInterruptRequest, deliverStopRequest, deliverTimeoutRequest, interruptRequestPath, timeoutRequestPath, stopRequestsDir } from "../../src/runs/background/control-channel.ts";
 import { summarizeAsyncStatus } from "../../src/runs/background/async-status.ts";
 
 function tempRoot(prefix: string): string {
@@ -24,6 +25,37 @@ function errno(code: string): NodeJS.ErrnoException {
 }
 
 describe("async stale-run reconciliation", () => {
+	it("never signals a recycled PID while reconciling or controlling a retained stale record", () => {
+		const root = tempRoot("pi-retained-recycled-pid-");
+		try {
+			const asyncDir = path.join(root, "retained-run");
+			const resultsDir = path.join(root, "results");
+			writeStatus(asyncDir, {
+				lifecycleArtifactVersion: 3, runId: "retained-run", sessionId: "retained-session",
+				mode: "single", state: "running", pid: 4242, startedAt: 1000, lastUpdate: 1000,
+				processTerminal: { version: 1, state: "pending", runId: "retained-run", runnerProcessInstanceId: "old-runner" },
+				steps: [{ agent: "worker", status: "running" }],
+			});
+			const calls: Array<{ pid: number; signal?: NodeJS.Signals | 0 }> = [];
+			const kill = (pid: number, signal?: NodeJS.Signals | 0) => { calls.push({ pid, signal }); return true; };
+			const repaired = reconcileAsyncRun(asyncDir, { resultsDir, now: () => 1000 + 25 * 60 * 60 * 1000, kill });
+			assert.equal(repaired.status?.state, "failed");
+			assert.equal(repaired.status?.processTerminal?.state, "unknown");
+			assert.match(repaired.message ?? "", /PID ownership cannot be verified/);
+			const input = { asyncDir, pid: 4242, signal: "SIGTERM" as const, kill };
+			deliverInterruptRequest(input);
+			deliverTimeoutRequest(input);
+			deliverStopRequest(input);
+			assert.deepEqual(calls, [{ pid: 4242, signal: 0 }]);
+			assert.ok(fs.existsSync(interruptRequestPath(asyncDir)));
+			assert.ok(fs.existsSync(timeoutRequestPath(asyncDir)));
+			assert.equal(fs.readdirSync(stopRequestsDir(asyncDir)).length, 1);
+			// Terminal retained status no longer even probes the recycled PID.
+			reconcileAsyncRun(asyncDir, { resultsDir, kill });
+			assert.deepEqual(calls, [{ pid: 4242, signal: 0 }]);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
 	it("classifies pid liveness without treating EPERM as dead", () => {
 		assert.equal(checkPidLiveness(123, () => true), "alive");
 		assert.equal(checkPidLiveness(123, () => { throw errno("ESRCH"); }), "dead");

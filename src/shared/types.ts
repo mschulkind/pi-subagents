@@ -2808,9 +2808,14 @@ export function resolveTempScopeId(options?: {
 const MAX_PARALLEL = 8;
 export const MAX_CONCURRENCY = 4;
 const configuredTempRoot = process.env.PI_SUBAGENTS_TEMP_ROOT?.trim();
+const durableDir = process.env.YOLO_DURABLE_DIR?.trim();
+// Yolo exports a workspace-local jail path, not a shared host runtime root.
+const durableRuntimeRoot = durableDir && path.isAbsolute(durableDir) && !durableDir.includes("\0")
+	? path.join(durableDir, "pi-subagents", "jail", resolveTempScopeId())
+	: undefined;
 export const TEMP_ROOT_DIR = configuredTempRoot
 	? path.resolve(configuredTempRoot)
-	: path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
+	: durableRuntimeRoot ?? path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-results");
 export const ASYNC_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-runs");
 export const CHAIN_RUNS_DIR = path.join(TEMP_ROOT_DIR, "chain-runs");

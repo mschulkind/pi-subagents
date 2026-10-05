@@ -670,9 +670,14 @@ export class SubagentFleetStatus {
 		// Coverage is about visible row ownership, not animation or live usage.
 		// Clearing it for each clock/token update expands the earlier async widget
 		// for one frame until this below-editor roster renders and covers it again.
+		// Selection only changes ownership when it moves the visible tree slice.
+		const tree = fleetTreeRows(this.entries.filter((entry) => !entry.surface));
+		const selectedTreeIndex = Math.max(0, tree.findIndex((row) => (row.kind === "owner" || row.kind === "child") && row.entry.key === this.selectedKey));
+		const visibleCount = Math.min(this.maxAgentRows, tree.length);
+		const start = selectedTreeIndex < visibleCount ? 0 : selectedTreeIndex - visibleCount + 1;
 		const coverageKey = JSON.stringify([
-			this.selectedKey,
-			fleetTreeRows(this.entries.filter((entry) => !entry.surface)).map((row) =>
+			start,
+			tree.map((row) =>
 				row.kind === "owner" || row.kind === "child" ? [row.kind, row.entry.key] : [row.kind, row.ownerKey]),
 			[...this.workflowSnapshots].map(([key, value]) => [key, value.snapshot]),
 		]);
@@ -819,7 +824,7 @@ export class SubagentFleetStatus {
 		const visibleCount = Math.min(this.maxAgentRows, tree.length);
 		const start = selectedTreeIndex < visibleCount ? 0 : selectedTreeIndex - visibleCount + 1;
 		const hiddenBelow = tree.length - (start + visibleCount);
-		if (start > 0) lines.push(rightAlign("", theme.fg("dim", `↑ ${start} more`), width));
+
 		for (let index = start; index < start + visibleCount; index++) {
 			const row = tree[index]!;
 			if (row.kind === "owner" || row.kind === "child") {
@@ -833,7 +838,10 @@ export class SubagentFleetStatus {
 				lines.push(this.renderNestedRow(row.row, row.last, width, theme));
 			}
 		}
-		if (hiddenBelow > 0) lines.push(rightAlign("", theme.fg("dim", `↓ ${hiddenBelow} more`), width));
+		if (tree.length > visibleCount) {
+			const overflow = [start > 0 ? `↑ ${start} more` : "", hiddenBelow > 0 ? `↓ ${hiddenBelow} more` : ""].filter(Boolean).join(" · ");
+			lines.push(rightAlign("", theme.fg("dim", overflow), width));
+		}
 		if (this.ui && this.widgetRegistered && this.onWorkflowCoverageChange) {
 			const coverage = new Map<string, string>();
 			for (const [key, { snapshot, childRows }] of this.workflowSnapshots) {

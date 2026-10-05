@@ -392,6 +392,20 @@ When `storeRoot` is omitted, schedules remain at `<cwd>/.pi/subagents/schedules`
 
 `maxTasks` defaults to `8`; `concurrency` defaults to `4`. Per-call `concurrency` takes precedence.
 
+## Runtime storage (`PI_SUBAGENTS_TEMP_ROOT`, `YOLO_DURABLE_DIR`)
+
+Runtime paths are resolved once when the extension is imported, before any child launch:
+
+1. A nonblank `PI_SUBAGENTS_TEMP_ROOT` wins. Absolute paths are used directly; relative paths resolve against the importing process's cwd.
+2. Otherwise, an absolute, nonblank, non-NUL `YOLO_DURABLE_DIR` selects `<durableDir>/pi-subagents/jail/<scope>`, where `<scope>` is the existing user scope (normally `uid-<uid>`). Yolo supplies this workspace-local jail directory. Relative or malformed durable values are ignored.
+3. Without either, the default remains `<os.tmpdir()>/pi-subagents-<scope>`. Bare host launches do not acquire a new persistent default.
+
+This root contains async runs/results, completion replay, workflow runs, temporary artifacts, supervisor/control state, nested-run registries and runtime leases/capacity records. Detached runners inherit the resolved **absolute** `PI_SUBAGENTS_TEMP_ROOT`, including when their cwd is a dedicated worktree. Set overrides before starting Pi; later environment mutation does not relocate an imported runtime. Keep different workspaces and host/jail PID domains in separate roots; an explicit override must preserve that isolation.
+
+Normal runtime initialization creates its child directories and retains existing file permissions. A durable-path access error is not silently retried in `/tmp`. No existing records are moved or deleted on root selection: earlier `/tmp` records remain there until normal cleanup or jail teardown. Persistence is not indefinite retention: async history still follows its 30-day retention safeguards, completion replay has its existing bounded lifetime, and temporary workflow artifacts still have 24-hour cleanup. Session/report paths outside this root are unchanged.
+
+A restart preserves saved records at the same durable path, not live runner processes, in-memory UI state, or an automatic replay of a workflow script. Reopen the originating parent session to inspect its retained status and receipts. A vanished runner is reconciled as failed with unknown process-terminal proof, not observed completion. A recycled live PID can delay stale reconciliation for up to 24 hours; portable stop/interrupt/timeout controls write only the run's file inbox and never signal that persisted PID. Retained-session continuation remains subject to existing lease and process-proof checks; persistence does not guarantee automatic revival after jail/host restart.
+
 ## `defaultSessionDir`
 
 ```json

@@ -728,6 +728,8 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 		const runnerEnv: NodeJS.ProcessEnv = {
 			...omitGitRoutingEnv(omitExtensionBindingsEnv(process.env)),
 			...childCacheRetentionEnv(),
+			// Keep import-time storage identity even when the runner changes cwd.
+			PI_SUBAGENTS_TEMP_ROOT: TEMP_ROOT_DIR,
 			[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
 			// npm must override inherited bundled layouts (#2071); binaries retain release assets.
 			PI_PACKAGE_DIR: binaryHost ? process.env.PI_PACKAGE_DIR : piPackageRoot,
