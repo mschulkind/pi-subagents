@@ -10,3 +10,8 @@
 
 Full gates, landing/preservation audit and independent acceptance results are
 recorded in the durable implementation report rather than this live task list.
+
+- [x] Reproduce and repair all three round-one reviewer findings in both modes.
+- [x] Retain urgent descendant distinctions and deduplicate materialized work.
+- [x] Include panes in roster allocation/overflow and preserve selected summary.
+- [x] Exercise repeated old Fleet disposer after same-TUI inspector remount.

@@ -528,10 +528,12 @@ describe("below-editor subagent FleetView", () => {
 		const fleet = new SubagentFleetStatus(state, () => {}, { refreshMs: 60_000 });
 		try {
 			fleet.setContext(ctx);
-			const lines = widgetFactory!({ requestRender() {} }, theme).render(50);
+			const component = widgetFactory!({ requestRender() {} }, theme);
+			const lines = component.render(50);
 			assert.equal(lines.length, 1);
 			assert.ok(lines[0]!.includes("1 active agent"));
-			assert.ok(lines[0]!.includes("↓ 30 window · 42 spent"));
+			assert.match(lines[0]!, /1 queued.*1 active agent/, "waiting signal precedes routine usage at narrow width");
+			assert.match(component.render(100)[0]!, /↓ 30 window · 42 spent/, "roomy summary still retains usage");
 			assert.ok(visibleWidth(lines[0]!) <= 50);
 		} finally {
 			fleet.dispose();

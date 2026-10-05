@@ -18,3 +18,17 @@ content; navigation and inspection remain available.
 Async layout state is instance-local. Cache dependencies include actual terminal
 rows and shared available rows; invalidate clears themed output and layout state.
 Mounted updates still invalidate content without replacing the widget key.
+
+Reviewer corrections: compact summaries prepare prioritized failed/blocked/paused,
+attention and queued signals from full descendants/checklists, not just wrappers.
+Materialized/native representations and repeated wrapper outcomes are deduplicated;
+separate urgent states retain separate labels. Normal-height project panes share
+the bounded roster body and overflow count, with a persistent pane/attention notice
+in the header. Selection never triggers short-screen replacement. Each Fleet
+mount captures its own unregister closure; late old disposal cannot clear a new
+mount sharing the same TUI.
+
+Urgency also leads the actual inactive/default compact Fleet and progressive
+async header, within their existing row counts. Default 40×10 tests verify
+clipped failed/attention/queued signals, pane attention aggregation, input and
+unchanged three-above/one-below heights after urgency clears.

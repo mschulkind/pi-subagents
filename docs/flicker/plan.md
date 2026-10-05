@@ -14,3 +14,9 @@ regressions, and documentation. No Core, runner, configuration or deployment edi
    Cache per mounted instance, actual rows, available budget and invalidation.
 5. Run isolated full gates. Land only owned paths with an isolated index; retain
    unrelated work, verify tested tree equality, and make one conventional commit.
+
+Round-one review corrections stay in the same approved seam: prepare prioritized
+descendant signals, put panes in the bounded roster instead of trimming the
+finished frame, and bind unregister/cleanup to each mount rather than the TUI.
+Reproduce each hypothesis red-first, rerun bounded-concurrency gates once, then
+amend only the unpublished repair with ordinary hooks and isolated staging.

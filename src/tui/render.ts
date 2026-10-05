@@ -2520,11 +2520,65 @@ function widgetHeaderCounts(jobs: AsyncJobState[]): { running: AsyncJobState[]; 
 	};
 }
 
-function buildSingleLineWidgetLines(jobs: AsyncJobState[], theme: Theme, width: number, frame?: number): string[] {
+/** Urgent work signals, deduplicated across native steps, checklists and materialized children. */
+export function compactJobSignals(jobs: AsyncJobState[], extraNested: NestedRunSummary[] = [], attentionKeys: string[] = []): string {
+	const signals = new Map<string, Set<string>>();
+	const add = (key: string, state: string, activity?: string): void => {
+		const label = state === "pending" ? "queued" : state === "error" ? "failed" : state;
+		if (["failed", "rejected", "partial", "blocked", "paused", "queued", "stopped"].includes(label)) {
+			const keys = signals.get(label) ?? new Set<string>(); keys.add(key); signals.set(label, keys);
+		}
+		if (activity === "needs_attention" || state === "needs_attention") {
+			const keys = signals.get("attention") ?? new Set<string>(); keys.add(key); signals.set("attention", keys);
+		}
+	};
+	const jobIds = new Set(jobs.map((job) => job.asyncId));
+	const nested = (runs: NestedRunSummary[] | undefined): void => {
+		for (const run of runs ?? []) {
+			if (jobIds.has(run.id)) continue;
+			add(run.id, run.steps?.some((step) => step.status === run.state) ? "running" : run.state, run.activityState);
+			for (const [index, step] of (run.steps ?? []).entries()) {
+				add(`${run.id}:${index}`, step.status, step.activityState); nested(step.children);
+			}
+			nested(run.children);
+		}
+	};
+	const { projectionFor } = widgetJobTree(jobs, 0);
+	for (const job of jobs) {
+		const projection = projectionFor(job);
+		const checklist = widgetChecklistWithoutMaterializedChildren(projection);
+		const representedState = projection.steps.some((step) => step.status === job.status || (job.status === "queued" && step.status === "pending"))
+			|| checklist?.phases.some((phase) => phase.items.some((item) => item.state === job.status))
+			|| projection.children?.some((child) => child.status === job.status);
+		// A wrapper outcome repeated by its leaf work is not an additional failed
+		// or waiting agent. An independent wrapper error still remains visible.
+		add(job.asyncId, representedState ? "running" : job.status, job.activityState);
+		for (const item of checklist?.phases.flatMap((phase) => phase.items) ?? []) add(`${job.asyncId}:${item.key}`, item.state);
+		for (const [index, step] of projection.steps.entries()) {
+			if (projection.materializedKeys?.has(step.workflowKey ?? "") || projection.materializedKeys?.has(step.runId ?? "")) continue;
+			const key = `${job.asyncId}:${step.workflowKey ?? step.runId ?? index}`;
+			// Workflow checklists already normalize native-step state. Preserve
+			// explicit attention independently; non-workflow steps have no checklist.
+			add(key, checklist ? "running" : step.status, step.activityState);
+			nested(step.children);
+		}
+		nested(job.nestedChildren);
+	}
+	nested(extraNested);
+	for (const key of attentionKeys) add(key, "running", "needs_attention");
+	return ["failed", "rejected", "partial", "blocked", "paused", "attention", "queued", "stopped"]
+		.filter((label) => signals.has(label)).map((label) => `${signals.get(label)!.size} ${label}`).join(" · ");
+}
+
+function buildSingleLineWidgetLines(jobs: AsyncJobState[], theme: Theme, width: number, frame?: number, signals = compactJobSignals(jobs)): string[] {
 	const counts = widgetHeaderCounts(jobs);
 	const hasActive = counts.running.length > 0 || counts.queued.length > 0;
 	const glyph = counts.running.length > 0 ? runningGlyph(animatedSeed(widgetJobsRunningSeed(counts.running), frame)) : hasActive ? "●" : "○";
 	const parts: string[] = [];
+	if (signals) {
+		const routine = counts.running.length ? `${counts.running.length}/${jobs.length} running` : counts.complete.length ? `${counts.complete.length}/${jobs.length} done` : "";
+		return [truncLine(`${theme.fg("warning", glyph)} ${signals}${routine ? ` · ${routine}` : ""}`, width)];
+	}
 	if (counts.running.length > 0) parts.push(`${counts.running.length}/${jobs.length} running`);
 	if (counts.queued.length > 0) parts.push(`${counts.queued.length} queued`);
 	if (counts.failed.length > 0) parts.push(`${counts.failed.length} failed`);
@@ -2587,10 +2641,11 @@ function selectProgressiveJobKeys(jobs: AsyncJobState[], previousKeys: string[],
 	return selected;
 }
 
-function progressiveHeaderLine(jobs: AsyncJobState[], theme: Theme, width: number, frame?: number): string {
+function progressiveHeaderLine(jobs: AsyncJobState[], theme: Theme, width: number, frame?: number, signals = compactJobSignals(jobs)): string {
 	const counts = widgetHeaderCounts(jobs);
 	const hasActive = counts.running.length > 0 || counts.queued.length > 0;
 	const glyph = counts.running.length > 0 ? runningGlyph(animatedSeed(widgetJobsRunningSeed(counts.running), frame)) : hasActive ? "●" : "○";
+	if (signals) return truncLine(`${theme.fg("warning", glyph)} ${signals}${counts.running.length ? ` · ${counts.running.length} running` : ""}`, width);
 	const parts: string[] = [];
 	if (counts.running.length > 0) parts.push(formatAgentRunningLabel(counts.running.length));
 	if (counts.queued.length > 0) parts.push(`${counts.queued.length} queued`);
@@ -2642,9 +2697,9 @@ function progressiveHiddenLine(hiddenJobs: AsyncJobState[], theme: Theme, width:
 	return truncLine(theme.fg("dim", `  +${hiddenJobs.length} more${parts.length ? ` (${parts.join(", ")})` : ""}`), width);
 }
 
-function buildProgressiveWidgetLines(jobs: AsyncJobState[], theme: Theme, width: number, lockedRows: number, previousKeys: string[], frame?: number, projectionFor: WorkflowWidgetProjectionLookup = workflowWidgetProjectionLookup()): { lines: string[]; visibleJobKeys: string[] } {
+function buildProgressiveWidgetLines(jobs: AsyncJobState[], theme: Theme, width: number, lockedRows: number, previousKeys: string[], frame?: number, projectionFor: WorkflowWidgetProjectionLookup = workflowWidgetProjectionLookup(), signals = compactJobSignals(jobs)): { lines: string[]; visibleJobKeys: string[] } {
 	const rowCount = Math.max(1, lockedRows);
-	if (rowCount === 1) return { lines: buildSingleLineWidgetLines(jobs, theme, width, frame), visibleJobKeys: [] };
+	if (rowCount === 1) return { lines: buildSingleLineWidgetLines(jobs, theme, width, frame, signals), visibleJobKeys: [] };
 
 	const bodyRows = rowCount - 1;
 	let visibleJobKeys = selectProgressiveJobKeys(jobs, previousKeys, bodyRows);
@@ -2660,7 +2715,7 @@ function buildProgressiveWidgetLines(jobs: AsyncJobState[], theme: Theme, width:
 	}
 
 	const lines = [
-		progressiveHeaderLine(jobs, theme, width, frame),
+		progressiveHeaderLine(jobs, theme, width, frame, signals),
 		...visibleJobs.map((job) => progressiveJobLine(job, theme, width, frame, projectionFor(job))),
 	];
 	if (hiddenJobs.length > 0 && lines.length < rowCount) lines.push(progressiveHiddenLine(hiddenJobs, theme, width));
@@ -2691,23 +2746,23 @@ function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expan
 	return [...lines.slice(0, visibleLines), truncLine(theme.fg("dim", hint), width)];
 }
 
-function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[], theme: Theme, width: number, expanded: boolean, frame: number | undefined, projectionFor: WorkflowWidgetProjectionLookup | undefined, layout: WidgetLayoutState, rows: number, availableRows: number, sharedBudget: boolean): string[] {
+function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[], theme: Theme, width: number, expanded: boolean, frame: number | undefined, projectionFor: WorkflowWidgetProjectionLookup | undefined, layout: WidgetLayoutState, rows: number, availableRows: number, sharedBudget: boolean, signals: string): string[] {
 	const widgetLayoutSession = layout.session;
 	if (expanded && (!sharedBudget || availableRows >= 12)) {
 		layout.session = undefined;
 		const lines = fitWidgetLineBudget(buildLines(), theme, width, true, rows);
-		return (!sharedBudget || lines.length <= availableRows) ? lines : buildProgressiveWidgetLines(jobs, theme, width, availableRows, [], frame, projectionFor).lines;
+		return (!sharedBudget || lines.length <= availableRows) ? lines : buildProgressiveWidgetLines(jobs, theme, width, availableRows, [], frame, projectionFor, signals).lines;
 	}
 
 	const columns = width;
 	const hasMatchingSession = widgetLayoutSession?.expanded === expanded && widgetLayoutSession.rows === rows && widgetLayoutSession.columns === columns && widgetLayoutSession.availableRows === availableRows;
 
 	if (hasMatchingSession && widgetLayoutSession?.tier === "single-line") {
-		return buildSingleLineWidgetLines(jobs, theme, width, frame);
+		return buildSingleLineWidgetLines(jobs, theme, width, frame, signals);
 	}
 
 	if (hasMatchingSession && widgetLayoutSession?.tier === "progressive" && widgetLayoutSession.lockedRows !== undefined) {
-		const rendered = buildProgressiveWidgetLines(jobs, theme, width, widgetLayoutSession.lockedRows, widgetLayoutSession.visibleJobKeys, frame, projectionFor);
+		const rendered = buildProgressiveWidgetLines(jobs, theme, width, widgetLayoutSession.lockedRows, widgetLayoutSession.visibleJobKeys, frame, projectionFor, signals);
 		widgetLayoutSession.visibleJobKeys = rendered.visibleJobKeys;
 		return rendered.lines;
 	}
@@ -2724,11 +2779,11 @@ function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[
 
 	if (availableRows <= 2) {
 		layout.session = { expanded, rows, columns, availableRows, tier: "single-line", visibleJobKeys: [] };
-		return buildSingleLineWidgetLines(jobs, theme, width, frame);
+		return buildSingleLineWidgetLines(jobs, theme, width, frame, signals);
 	}
 
 	const lockedRows = Math.min(availableRows, collapsedWidgetLineBudget(rows));
-	const rendered = buildProgressiveWidgetLines(jobs, theme, width, lockedRows, [], frame, projectionFor);
+	const rendered = buildProgressiveWidgetLines(jobs, theme, width, lockedRows, [], frame, projectionFor, signals);
 	layout.session = { expanded, rows, columns, availableRows, tier: "progressive", lockedRows, visibleJobKeys: rendered.visibleJobKeys };
 	return rendered.lines;
 }
@@ -2840,6 +2895,7 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 	return (tui, theme) => {
 		const container = new Container();
 		const layout: WidgetLayoutState = {};
+		let signals = compactJobSignals(jobs);
 		let cachedRows: number | undefined;
 		let cachedAvailableRows: number | undefined;
 		let cachedRenderWidth: number | undefined;
@@ -2860,6 +2916,7 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 		asyncWidgetInvalidations.set(ui, invalidateCoverage);
 		const update = (nextJobs: AsyncJobState[]): void => {
 			jobs = nextJobs;
+			signals = compactJobSignals(jobs);
 			cachedLines = undefined;
 			tui.requestRender();
 		};
@@ -2925,7 +2982,7 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 			cachedExpanded = expanded;
 			cachedLines = (collapsed
 				? buildSingleLineWidgetLines(jobs, theme, width, frame)
-				: fitAdaptiveWidgetLines(roots, buildLines, theme, width, expanded, frame, projectionFor, layout, rows, availableRows, Boolean(fleet))
+				: fitAdaptiveWidgetLines(roots, buildLines, theme, width, expanded, frame, projectionFor, layout, rows, availableRows, Boolean(fleet), signals)
 			).map((line) => paddedWidgetLine(line, renderWidth));
 			return cachedLines;
 		};

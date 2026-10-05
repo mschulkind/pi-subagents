@@ -14,3 +14,8 @@ above-viewport changes; those policies are unchanged.
 
 Read Pi's complete installed extensions.md/tui.md and this project's VISION.md.
 No public API exposes remaining height after other extensions or multiline input.
+
+Independent round-one review identified three hypotheses. Real-renderer red tests
+confirmed all three in both modes: descendant urgency vanished at 40×10; eight
+natives crowded out project panes and pane selection changed height; repeated
+old Fleet disposal after inspector handback unregistered the replacement.

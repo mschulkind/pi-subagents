@@ -19,7 +19,7 @@ if (!process.env.PI_SUBAGENTS_REAL_GEOMETRY_TEST) {
 		const output = execFileSync(process.execPath, ["--experimental-strip-types", "--import", fileURLToPath(new URL("../support/isolated-temp-root.mjs", import.meta.url)), "--test", fileURLToPath(import.meta.url)], {
 			env, stdio: "pipe", encoding: "utf8",
 		});
-		assert.match(output, /tests 23\b/, "the actual-renderer child must execute every regression");
+		assert.match(output, /tests 31\b/, "the actual-renderer child must execute every regression");
 		t.diagnostic(output.trim());
 	});
 } else {
@@ -35,7 +35,7 @@ if (!process.env.PI_SUBAGENTS_REAL_GEOMETRY_TEST) {
 	}
 	const theme = { fg: (_name: string, text: string) => `\x1b[36m${text}\x1b[39m`, bg: (_name: string, text: string) => text, bold: (text: string) => text };
 	type Frame = { above: string[]; below: string[] };
-	function harness(mode: "regular" | "fullscreen" = "regular", columns = 80, rows = 24, clear = false, maxAgentRows = 6) {
+	function harness(mode: "regular" | "fullscreen" = "regular", columns = 80, rows = 24, clear = false, maxAgentRows = 6, detailMode: "detailed" | "compact" | "default" = "detailed") {
 		const originalNow = Date.now;
 		let now = 10_000;
 		Date.now = () => now;
@@ -74,7 +74,7 @@ if (!process.env.PI_SUBAGENTS_REAL_GEOMETRY_TEST) {
 		} } as unknown as ExtensionContext;
 		let releaseInspector: (() => void) | undefined;
 		const fleet = new SubagentFleetStatus(state, () => new Promise<void>((resolve) => { releaseInspector = resolve; }), {
-			refreshMs: 60_000, detailMode: "detailed", maxAgentRows,
+			refreshMs: 60_000, ...(detailMode === "default" ? {} : { detailMode }), maxAgentRows,
 			onWorkflowCoverageChange(ui, value) { coverage.push([...value.keys()]); setInlineWorkflowCoverage(ui, value); },
 		});
 		function settle() {
@@ -366,5 +366,101 @@ if (!process.env.PI_SUBAGENTS_REAL_GEOMETRY_TEST) {
 			assert.match(text(frames[0]!.above), /long-attached-worker/);
 		} finally { h.close(); }
 	});
+
+	for (const mode of ["regular", "fullscreen"] as const) {
+		it(`${mode}: short-screen overviews retain descendant failures, waiting and attention`, async () => {
+			const h = harness(mode, 40, 10);
+			try {
+				const owner: AsyncJobState = { ...job("urgent-workflow"), mode: "workflow" as const, steps: [
+					{ workflowKey: "failed-lane", agent: "failed-worker", status: "failed" as const },
+					{ workflowKey: "waiting-lane", agent: "waiting-worker", status: "pending" as const },
+				], nestedChildren: [{ id: "nested-attention", agent: "nested-worker", state: "running" as const, activityState: "needs_attention" as const }] };
+				h.state.asyncJobs.set(owner.asyncId, owner); h.start();
+				for (const lines of [h.frames.at(-1)!.above, h.frames.at(-1)!.below]) {
+					assert.match(text(lines), /1 failed/); assert.match(text(lines), /1 queued/); assert.match(text(lines), /1 attention/);
+				}
+				assert.match(text((await h.viewport()).lines), /failed.*attention.*queued/);
+				// Materialized job and its native workflow step are the same failed work.
+				const child: AsyncJobState = { ...job("failed-child"), parentWorkflowRunId: owner.asyncId, workflowKey: "failed-lane", status: "failed" as const };
+				child.steps = [{ index: 0, agent: "failed-worker", status: "failed" }];
+				h.state.asyncJobs.set(child.asyncId, child);
+				owner.steps![0]!.runId = child.asyncId;
+				const frames = h.update(); assert.equal(frames.length, 1);
+				for (const lines of [frames[0]!.above, frames[0]!.below]) { assert.match(text(lines), /1 failed/); assert.doesNotMatch(text(lines), /2 failed/); }
+			} finally { h.close(); }
+		});
+		it(`${mode}: normal-height native and project pane navigation keeps attention, selected summary and height`, async () => {
+			const h = harness(mode, 80, 40);
+			try {
+				for (let n = 0; n < 8; n++) h.state.asyncJobs.set(`native-${n}`, job(`native-${n}`, `worker-${n}`));
+				h.state.herdrProjectPanes = new Map([0, 1].map((n) => {
+					const projectRoot = `/project/pane-${n}`;
+					return [projectRoot, { projectRoot, bindingPath: `${projectRoot}/herdr.json`, paneId: `p${n}`, openedAt: "1970-01-01T00:00:20.000Z", state: "open" as const, agentStatus: n === 0 ? "needs_attention" : "running", ownership: "verified" as const, safeToClose: false, refreshedAt: 10_000, summary: n === 0 ? "urgent pane summary" : "routine pane summary" }];
+				}));
+				h.start(); h.key("\x1b[B"); const heights: number[] = [];
+				assert.match(text(h.frames.at(-1)!.below), /↓ 4 more/);
+				h.writes.length = 0;
+				let navigation = 0;
+				for (const key of [...Array(10).fill("\x1b[B"), ...Array(10).fill("\x1b[A")]) {
+					const frames = h.key(key); assert.equal(frames.length, 1);
+					for (const frame of frames) { heights.push(frame.below.length); assert.match(text(frame.below), /2 project panes.*1.*attention/); }
+					const frame = h.frames.at(-1)!;
+					navigation++;
+					const plain = text(frame.below).replace(/\x1b\[[0-9;]*m/g, "");
+					if (navigation === 9) assert.match(plain, /> pane-0.*urgent pane summary/);
+					if (navigation === 10) { assert.match(plain, /> pane-1.*routine pane summary/); assert.match(plain, /↑ 4 more/); }
+					if (/ > .*pane-0/.test(text(frame.below))) assert.match(text(frame.below), /urgent pane summary/);
+					if (/ > .*pane-1/.test(text(frame.below))) assert.match(text(frame.below), /routine pane summary/);
+				}
+				assert.deepEqual([...new Set(heights)], [10]);
+				assert.ok(h.writes.every((write) => !write.includes("\x1b[2J") && !write.includes("\x1b[3J")));
+				assert.match(text((await h.viewport()).lines), /2 project panes.*attention/);
+				assert.ok(h.frames.some((f) => /urgent pane summary/.test(text(f.below))));
+				assert.ok(h.frames.some((f) => /routine pane summary/.test(text(f.below))));
+			} finally { h.close(); }
+		});
+		it(`${mode}: repeated old Fleet disposal on the same TUI leaves inspector replacement ownership intact`, async () => {
+			const h = harness(mode, 120, 40);
+			try {
+				workflow(h); h.start(); const old = h.mounted.get(FLEET_STATUS_WIDGET_KEY)!;
+				h.key("\x1b[B"); h.key("\x1b[B"); h.key("\r"); await Promise.resolve(); h.finishInspector();
+				await new Promise((resolve) => setImmediate(resolve)); const handback = h.settle(); assert.equal(handback.length, 1);
+				const current = h.mounted.get(FLEET_STATUS_WIDGET_KEY)!; assert.notEqual(current, old);
+				old.dispose?.(); old.dispose?.(); assert.equal(h.screen.pending, false);
+				h.screen.requestRender(); const frames = h.settle(); assert.equal(frames.length, 1);
+				assert.match(text(frames[0]!.above), /Workflow children shown in Fleet roster/);
+				assert.doesNotMatch(text(frames[0]!.above), /attached-worker/);
+				assert.match(text(frames[0]!.below), /attached-worker/);
+				h.fleet.refresh(); h.settle(); assert.equal(h.mounted.get(FLEET_STATUS_WIDGET_KEY), current);
+			} finally { h.close(); }
+		});
+	}
+
+	for (const mode of ["regular", "fullscreen"] as const) {
+		it(`${mode}: inactive default compact Fleet and progressive async retain clipped urgency and pane attention`, async () => {
+			const h = harness(mode, 40, 10, false, 6, "default");
+			try {
+				const owner: AsyncJobState = { ...job("default-workflow"), mode: "workflow", steps: [
+					{ workflowKey: "failure", agent: "failed-worker", status: "failed" },
+					{ workflowKey: "wait", agent: "waiting-worker", status: "pending" },
+				], nestedChildren: [{ id: "attn", agent: "nested-worker", state: "running", activityState: "needs_attention" }] };
+				h.state.asyncJobs.set(owner.asyncId, owner);
+				const projectRoot = "/project/urgent";
+				h.state.herdrProjectPanes = new Map([[projectRoot, { projectRoot, bindingPath: `${projectRoot}/herdr.json`, paneId: "p1", openedAt: "1970-01-01T00:00:20.000Z", state: "open", agentStatus: "needs_attention", ownership: "verified", safeToClose: false, refreshedAt: 10_000, summary: "urgent pane" }]]);
+				h.start();
+				const frame = h.frames.at(-1)!; assert.equal(frame.above.length, 3); assert.equal(frame.below.length, 1);
+				assert.match(text(frame.above), /1 failed.*1 attention.*1 queued/);
+				assert.match(text(frame.below), /1 failed.*2 attention.*1 queued/);
+				assert.ok([...frame.above, ...frame.below].every((line) => visibleWidth(line) <= 40));
+				assert.match(text((await h.viewport()).lines), /1 failed.*2 attention.*1 queued/);
+				h.key("typed"); assert.equal(h.editor.getText(), "typed", "inactive default retains editor input");
+				owner.steps!.forEach((step) => { step.status = "running"; }); owner.nestedChildren![0]!.activityState = "idle";
+				const pane = h.state.herdrProjectPanes!.get(projectRoot)!; pane.agentStatus = "running"; pane.summary = "routine";
+				const updated = h.update(); assert.equal(updated.length, 1);
+				assert.equal(updated[0]!.above.length, 3); assert.equal(updated[0]!.below.length, 1);
+				assert.doesNotMatch(text(updated[0]!.above), /failed|attention|queued/);
+			} finally { h.close(); }
+		});
+	}
 
 }

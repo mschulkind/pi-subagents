@@ -173,7 +173,7 @@ describe("subagent async widget rendering", () => {
 					const lines = renderWidgetLines(widgets[0], 100);
 					const text = lines.join("\n");
 					if (rows === 12) {
-						assert.match(text, status === "queued" ? /2\/3 running, 1 queued/ : /1\/2 running/);
+						assert.match(text, status === "queued" ? /1 queued.*2\/3 running/ : /1\/2 running/);
 						assert.equal(lines.length, 1);
 					} else {
 						assert.equal(text.match(new RegExp(`${runningGlyphPattern} live-worker`, "g"))?.length, 1, text);

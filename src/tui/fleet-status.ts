@@ -8,7 +8,7 @@ import { contextModeLabel } from "../runs/shared/context-mode.ts";
 import { formatWorkflowJsonPreview } from "../workflows/scripted-workflow.ts";
 import { hostStepReportName, hostStepVerdictLabel } from "../runs/shared/host-step-status.ts";
 import { isStaleExtensionContextError } from "../shared/extension-context.ts";
-import { inlineWorkflowRenderKey, registerInlineFleetProjection, type InlineFleetProjection } from "./render.ts";
+import { compactJobSignals, inlineWorkflowRenderKey, registerInlineFleetProjection, type InlineFleetProjection } from "./render.ts";
 import { formatWorkflowChecklistBottleneck, formatWorkflowChecklistPhase, formatWorkflowChecklistSummary, projectWorkflowChecklist, type WorkflowChecklistPhase, type WorkflowChecklistProjection } from "../workflows/workflow-checklist.ts";
 
 export const FLEET_STATUS_WIDGET_KEY = "subagent-fleet-status";
@@ -543,6 +543,7 @@ export class SubagentFleetStatus {
 	private lastRenderKey = "";
 	private unregisterProjection: (() => void) | undefined;
 	private entries: FleetStatusEntry[] = [];
+	private compactSignals = "";
 	private workflowSnapshots = new Map<string, { snapshot: string; childRows: Set<string> }>();
 	private readonly onWorkflowCoverageChange: FleetStatusOptions["onWorkflowCoverageChange"];
 	private readonly state: SubagentState;
@@ -607,6 +608,7 @@ export class SubagentFleetStatus {
 			return;
 		}
 		this.entries = collectFleetStatusEntries(this.state);
+		this.compactSignals = compactJobSignals([...this.state.asyncJobs.values()], [...this.state.foregroundControls.values()].flatMap((control) => control.nestedChildren ?? []), this.entries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).map((entry) => entry.key));
 		this.workflowSnapshots.clear();
 		if (this.showsDetails() && !this.inspectorOpen && !this.state.fleetInspectorOpen && this.onWorkflowCoverageChange) {
 			const childrenByParent = new Map<string, AsyncJobState[]>();
@@ -671,15 +673,16 @@ export class SubagentFleetStatus {
 		if (!this.widgetRegistered) {
 			ctx.ui.setWidget(FLEET_STATUS_WIDGET_KEY, (tui, theme) => {
 				this.tui = tui;
-				this.unregisterProjection = registerInlineFleetProjection(ctx.ui, (width, rows, projectionTheme) => this.project(width, rows, projectionTheme));
+				const unregister = registerInlineFleetProjection(ctx.ui, (width, rows, projectionTheme) => this.project(width, rows, projectionTheme));
+				this.unregisterProjection = unregister;
 				return {
 					render: (width: number) => this.render(width, theme),
 					invalidate: () => {
 						this.lastRenderKey = "";
 					},
 					dispose: () => {
-						if (this.tui !== tui) return;
-						this.unregisterProjection?.();
+						unregister();
+						if (this.unregisterProjection !== unregister) return;
 						this.unregisterProjection = undefined;
 						this.clearWorkflowCoverage();
 						this.widgetRegistered = false;
@@ -791,7 +794,7 @@ export class SubagentFleetStatus {
 			const agents = activeEntries > 0 ? `${activeEntries} active ${noun}${activeEntries === 1 ? "" : "s"}` : "";
 			const paneAttention = projectEntries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).length;
 			const panes = projectEntries.length > 0 ? `${projectEntries.length} pane${projectEntries.length === 1 ? "" : "s"}${paneAttention ? ` (${paneAttention} ⚠)` : ""}` : "";
-			const label = [agents, asyncRuns, panes].filter(Boolean).join(" · ");
+			const label = [this.compactSignals, agents, asyncRuns, panes].filter(Boolean).join(" · ");
 			const nativeUsage = formatFleetTokens(tokens, window, nativeEntries.length);
 			const usage = hasWorkflow
 				? nativeEntries.length > 0 ? `standalone: ${nativeUsage} · workflow usage on child rows` : "usage on child rows"
@@ -808,11 +811,11 @@ export class SubagentFleetStatus {
 		// Terminal size is only an upper bound: other extensions and multiline
 		// input are not observable through setWidget. Keep inspection accessible.
 		const budget = Math.min(this.maxAgentRows + 4, Math.max(3, Math.floor((rows - 4) / 2)));
-		if (budget < 5 || this.entries.some((entry) => entry.surface && entry.key === this.selectedKey)) {
+		if (budget < 5) {
 			const selected = this.entries.find((entry) => entry.key === this.selectedKey);
 			const counts = new Map<string, number>();
 			for (const entry of this.entries) counts.set(entry.state, (counts.get(entry.state) ?? 0) + 1);
-			const overview = `${this.entries.length} jobs · ${[...counts].map(([state, count]) => `${count} ${state}`).join(" · ")}`;
+			const overview = [this.compactSignals, `${this.entries.length} jobs`, [...counts].map(([state, count]) => `${count} ${state}`).join(" · ")].filter(Boolean).join(" · ");
 			return { lines: [
 				truncateToWidth(theme.fg("muted", overview), width),
 				selected ? truncateToWidth(`${this.bullet(selectedIndex, selectedIndex, theme)} ${selected.state} · ${theme.fg(fleetAgentIdentityColor(selected.agent), selected.displayLabel ?? selected.agent)}`, width) : truncateToWidth(`  ${this.bullet(0, selectedIndex, theme)} main`, width),
@@ -820,11 +823,14 @@ export class SubagentFleetStatus {
 			], coverage };
 		}
 		const hint = this.active ? "↑↓/jk select · enter inspect · esc back" : "↓/← to select · /subagents-fleet to inspect";
-		const lines = [truncateToWidth(`  ${theme.fg("dim", hint)}`, width), ""];
+		const projectEntries = this.entries.filter((entry) => entry.surface === "project-pane");
+		const attention = projectEntries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).length;
+		const paneNotice = projectEntries.length ? `${projectEntries.length} project panes · ${attention} attention` : "";
+		const lines = [truncateToWidth(`  ${theme.fg("dim", hint)}`, width), truncateToWidth(theme.fg(attention ? "warning" : "dim", paneNotice), width)];
 		lines.push(truncateToWidth(`  ${this.bullet(0, selectedIndex, theme)} main`, width));
 
 		const workEntries = this.entries.filter((entry) => !entry.surface);
-		const tree = fleetTreeRows(workEntries);
+		const tree: FleetTreeRow[] = [...fleetTreeRows(workEntries), ...projectEntries.map((entry) => ({ kind: "owner" as const, entry }))];
 		const selectedTreeIndex = Math.max(0, tree.findIndex((row) => (row.kind === "owner" || row.kind === "child") && row.entry.key === this.selectedKey));
 		const visibleCount = Math.min(this.maxAgentRows, Math.max(1, budget - 4), tree.length);
 		const start = selectedTreeIndex < visibleCount ? 0 : selectedTreeIndex - visibleCount + 1;
@@ -865,20 +871,8 @@ export class SubagentFleetStatus {
 				coverage.set(key.slice("async:".length), snapshot);
 			}
 		}
-		this.renderProjectPaneSection(lines, selectedIndex, width, theme, rosterIndexByKey);
-		return { lines: lines.slice(0, budget), coverage };
+		return { lines, coverage };
 	}
-
-	private renderProjectPaneSection(lines: string[], selectedIndex: number, width: number, theme: Theme, rosterIndexByKey: ReadonlyMap<string, number>): void {
-		const entries = this.entries.filter((entry) => entry.surface === "project-pane");
-		if (!entries.length) return;
-		lines.push("", truncateToWidth(`  ${theme.fg("dim", "project panes")}`, width));
-		for (const entry of entries) {
-			const rosterIndex = rosterIndexByKey.get(entry.key) ?? 0;
-			lines.push(this.renderEntry(rosterIndex, selectedIndex, entry, width, theme));
-		}
-	}
-
 
 	private renderEntry(rosterIndex: number, selectedIndex: number, entry: FleetStatusEntry, width: number, theme: Theme, branch?: string, unclipped = false): string {
 		const label = entry.displayLabel ?? entry.agent;
