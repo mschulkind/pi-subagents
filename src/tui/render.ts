@@ -2494,6 +2494,7 @@ function compactSingleWidgetLines(job: AsyncJobState, theme: Theme, width: numbe
 type WidgetRenderTier = "full" | "single-line" | "progressive";
 
 interface WidgetLayoutSession {
+	availableRows: number;
 	expanded: boolean;
 	rows: number;
 	columns: number;
@@ -2504,29 +2505,8 @@ interface WidgetLayoutSession {
 
 const RESERVED_NON_WIDGET_ROWS = 19;
 
-let widgetLayoutSession: WidgetLayoutSession | undefined;
-
-function resetWidgetLayoutSession(): void {
-	widgetLayoutSession = undefined;
-}
-
-function estimateAvailableWidgetRows(): number {
-	const rows = process.stdout.rows || 30;
-	return Math.max(1, rows - RESERVED_NON_WIDGET_ROWS);
-}
-
-function currentTerminalRows(): number {
-	return process.stdout.rows || 30;
-}
-
-function currentTerminalColumns(): number {
-	return process.stdout.columns || 120;
-}
-
-function widgetSessionMatches(expanded: boolean): boolean {
-	return widgetLayoutSession?.expanded === expanded
-		&& widgetLayoutSession.rows === currentTerminalRows()
-		&& widgetLayoutSession.columns === currentTerminalColumns();
+interface WidgetLayoutState {
+	session?: WidgetLayoutSession;
 }
 
 function widgetHeaderCounts(jobs: AsyncJobState[]): { running: AsyncJobState[]; queued: AsyncJobState[]; complete: AsyncJobState[]; failed: AsyncJobState[]; paused: AsyncJobState[]; stopped: AsyncJobState[] } {
@@ -2698,8 +2678,7 @@ function paddedWidgetLine(line: string, width: number): string {
 	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 }
 
-function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expanded: boolean): string[] {
-	const rows = process.stdout.rows || 30;
+function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expanded: boolean, rows: number): string[] {
 	const budget = expanded
 		? Math.max(12, Math.min(24, Math.floor(rows * 0.55)))
 		: collapsedWidgetLineBudget(rows);
@@ -2712,16 +2691,16 @@ function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expan
 	return [...lines.slice(0, visibleLines), truncLine(theme.fg("dim", hint), width)];
 }
 
-function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[], theme: Theme, width: number, expanded: boolean, frame?: number, projectionFor?: WorkflowWidgetProjectionLookup): string[] {
-	if (expanded) {
-		resetWidgetLayoutSession();
-		return fitWidgetLineBudget(buildLines(), theme, width, true);
+function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[], theme: Theme, width: number, expanded: boolean, frame: number | undefined, projectionFor: WorkflowWidgetProjectionLookup | undefined, layout: WidgetLayoutState, rows: number, availableRows: number, sharedBudget: boolean): string[] {
+	const widgetLayoutSession = layout.session;
+	if (expanded && (!sharedBudget || availableRows >= 12)) {
+		layout.session = undefined;
+		const lines = fitWidgetLineBudget(buildLines(), theme, width, true, rows);
+		return (!sharedBudget || lines.length <= availableRows) ? lines : buildProgressiveWidgetLines(jobs, theme, width, availableRows, [], frame, projectionFor).lines;
 	}
 
-	const hasMatchingSession = widgetSessionMatches(expanded);
-	const rows = currentTerminalRows();
-	const columns = currentTerminalColumns();
-	const availableRows = estimateAvailableWidgetRows();
+	const columns = width;
+	const hasMatchingSession = widgetLayoutSession?.expanded === expanded && widgetLayoutSession.rows === rows && widgetLayoutSession.columns === columns && widgetLayoutSession.availableRows === availableRows;
 
 	if (hasMatchingSession && widgetLayoutSession?.tier === "single-line") {
 		return buildSingleLineWidgetLines(jobs, theme, width, frame);
@@ -2735,28 +2714,42 @@ function fitAdaptiveWidgetLines(jobs: AsyncJobState[], buildLines: () => string[
 
 	const lines = buildLines();
 	if (lines.length <= availableRows) {
-		widgetLayoutSession = { expanded, rows, columns, tier: "full", visibleJobKeys: [] };
-		return fitWidgetLineBudget(lines, theme, width, false);
+		layout.session = { expanded, rows, columns, availableRows, tier: "full", visibleJobKeys: [] };
+		return fitWidgetLineBudget(lines, theme, width, false, rows);
 	}
-	if (availableRows > 2 && jobs.length === 1 && projectionFor?.(jobs[0]!).stageProgress) {
-		widgetLayoutSession = { expanded, rows, columns, tier: "full", visibleJobKeys: [] };
-		return fitWidgetLineBudget(lines, theme, width, false);
+	if (!sharedBudget && availableRows > 2 && jobs.length === 1 && projectionFor?.(jobs[0]!).stageProgress) {
+		layout.session = { expanded, rows, columns, availableRows, tier: "full", visibleJobKeys: [] };
+		return fitWidgetLineBudget(lines, theme, width, false, rows);
 	}
 
 	if (availableRows <= 2) {
-		widgetLayoutSession = { expanded, rows, columns, tier: "single-line", visibleJobKeys: [] };
+		layout.session = { expanded, rows, columns, availableRows, tier: "single-line", visibleJobKeys: [] };
 		return buildSingleLineWidgetLines(jobs, theme, width, frame);
 	}
 
 	const lockedRows = Math.min(availableRows, collapsedWidgetLineBudget(rows));
 	const rendered = buildProgressiveWidgetLines(jobs, theme, width, lockedRows, [], frame, projectionFor);
-	widgetLayoutSession = { expanded, rows, columns, tier: "progressive", lockedRows, visibleJobKeys: rendered.visibleJobKeys };
+	layout.session = { expanded, rows, columns, availableRows, tier: "progressive", lockedRows, visibleJobKeys: rendered.visibleJobKeys };
 	return rendered.lines;
 }
 
 const asyncWidgetUpdates = new WeakMap<ExtensionContext["ui"], (jobs: AsyncJobState[]) => void>();
 const inlineWorkflowCoverage = new WeakMap<ExtensionContext["ui"], ReadonlyMap<string, string>>();
 const asyncWidgetInvalidations = new WeakMap<ExtensionContext["ui"], () => void>();
+
+/** A pure current-frame projection of the mounted Fleet, using the same width and rows as the async widget. */
+export interface InlineFleetProjection {
+	lines: string[];
+	coverage: ReadonlyMap<string, string>;
+}
+const inlineFleetProjections = new WeakMap<ExtensionContext["ui"], (width: number, rows: number, theme: Theme) => InlineFleetProjection>();
+
+export function registerInlineFleetProjection(ui: ExtensionContext["ui"], project: (width: number, rows: number, theme: Theme) => InlineFleetProjection): () => void {
+	inlineFleetProjections.set(ui, project);
+	return () => {
+		if (inlineFleetProjections.get(ui) === project) inlineFleetProjections.delete(ui);
+	};
+}
 
 function inlineWorkflowDescendantShape(children: AsyncJobState["nestedChildren"]): unknown {
 	return children?.map((child) => [child.id, child.agent, inlineWorkflowDescendantShape(child.children)]);
@@ -2843,9 +2836,12 @@ function materializedWidgetChildLines(job: AsyncJobState, theme: Theme, width: n
 	return lines;
 }
 
-function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"]): (tui: { requestRender(): void }, theme: Theme) => Component {
+function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"]): (tui: { requestRender(): void; terminal?: { rows: number } }, theme: Theme) => Component {
 	return (tui, theme) => {
 		const container = new Container();
+		const layout: WidgetLayoutState = {};
+		let cachedRows: number | undefined;
+		let cachedAvailableRows: number | undefined;
 		let cachedRenderWidth: number | undefined;
 		let cachedFrame: number | undefined;
 		let cachedExpanded: boolean | undefined;
@@ -2854,7 +2850,7 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 		let collapsed = false;
 		const invalidate = (): void => {
 			cachedLines = undefined;
-			resetWidgetLayoutSession();
+			layout.session = undefined;
 			tui.requestRender();
 		};
 		const invalidateCoverage = (): void => {
@@ -2869,6 +2865,7 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 		};
 		asyncWidgetUpdates.set(ui, update);
 		const component = Object.assign(container, {
+			invalidate() { cachedLines = undefined; layout.session = undefined; },
 			// Only the mouse fields used here, without requiring newer Pi type exports.
 			handleMouse(event: { type: string; button: string; y: number; shift: boolean; alt: boolean; ctrl: boolean }) {
 				if (event.type !== "click" || event.button !== "left" || event.y !== 0) return undefined;
@@ -2886,7 +2883,12 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 			const now = Date.now();
 			const frame = Math.floor(now / WIDGET_ANIMATION_INTERVAL_MS);
 			const expanded = ui.getToolsExpanded?.() ?? false;
-			const coverage = inlineWorkflowCoverage.get(ui);
+			const rows = tui?.terminal?.rows ?? (process.stdout.rows || 30);
+			const fleet = inlineFleetProjections.get(ui)?.(renderWidth, rows, theme);
+			const coverage = fleet?.coverage ?? inlineWorkflowCoverage.get(ui);
+			// Global bounds, not an exact free-height grant from Core. Leave room
+			// for a three-row editor, spacer, footer and one transcript row.
+			const availableRows = Math.max(1, fleet ? rows - 6 - fleet.lines.length : rows - RESERVED_NON_WIDGET_ROWS);
 			const covered = new Set<string>();
 			if (coverage?.size) {
 				const childrenByParent = new Map<string, AsyncJobState[]>();
@@ -2905,8 +2907,8 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 				}
 			}
 			const coverageKey = JSON.stringify([...covered]);
-			if (cachedLines && cachedRenderWidth === renderWidth && cachedFrame === frame && cachedExpanded === expanded && cachedCoverage === coverageKey) return cachedLines;
-			if (cachedCoverage !== coverageKey) resetWidgetLayoutSession();
+			if (cachedLines && cachedRows === rows && cachedAvailableRows === availableRows && cachedRenderWidth === renderWidth && cachedFrame === frame && cachedExpanded === expanded && cachedCoverage === coverageKey) return cachedLines;
+			if (cachedCoverage !== coverageKey) layout.session = undefined;
 			cachedCoverage = coverageKey;
 			const width = Math.max(0, renderWidth - 2);
 			const { roots, projectionFor } = widgetJobTree(jobs, now);
@@ -2916,12 +2918,14 @@ function buildWidgetComponent(jobs: AsyncJobState[], ui: ExtensionContext["ui"])
 				: roots.length === 1 && !projectionFor(roots[0]!).children?.length
 					? compactSingleWidgetLines(roots[0]!, theme, width, frame, projectionFor(roots[0]!))
 					: buildWidgetLinesWithProjection(roots, theme, width, false, frame, projectionFor);
+			cachedRows = rows;
+			cachedAvailableRows = availableRows;
 			cachedRenderWidth = renderWidth;
 			cachedFrame = frame;
 			cachedExpanded = expanded;
 			cachedLines = (collapsed
 				? buildSingleLineWidgetLines(jobs, theme, width, frame)
-				: fitAdaptiveWidgetLines(roots, buildLines, theme, width, expanded, frame, projectionFor)
+				: fitAdaptiveWidgetLines(roots, buildLines, theme, width, expanded, frame, projectionFor, layout, rows, availableRows, Boolean(fleet))
 			).map((line) => paddedWidgetLine(line, renderWidth));
 			return cachedLines;
 		};
@@ -3024,7 +3028,6 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
  */
 export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
 	if (jobs.length === 0) {
-		resetWidgetLayoutSession();
 		asyncWidgetUpdates.delete(ctx.ui);
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 		return;

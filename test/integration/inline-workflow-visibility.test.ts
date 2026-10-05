@@ -16,7 +16,8 @@ function harness(maxAgentRows = 6, inspector: () => Promise<void> = async () => 
 	const mounted = new Map<string, Mounted>();
 	let requests = 0;
 	let expanded = false;
-	const tui = { requestRender() { requests++; }, focusedComponent: Object.create(Editor.prototype) };
+	let width = 240;
+	const tui = { terminal: { rows: 80 }, requestRender() { requests++; }, focusedComponent: Object.create(Editor.prototype) };
 	const ctx = { hasUI: true, ui: { theme, getToolsExpanded: () => expanded, getEditorText: () => "", onTerminalInput: () => () => {}, notify() {},
 		setWidget(key: string, factory: ((tui: unknown, theme: unknown) => Mounted) | undefined) {
 			mounted.get(key)?.dispose?.(); mounted.delete(key);
@@ -27,8 +28,8 @@ function harness(maxAgentRows = 6, inspector: () => Promise<void> = async () => 
 	renderWidget(ctx, [job]);
 	return { job, state, ctx, fleet, mounted, get requests() { return requests; }, setExpanded(value: boolean) { expanded = value; },
 		resetRequests() { requests = 0; },
-		asyncText: () => mounted.get(WIDGET_KEY)!.render(240).join("\n"),
-		roster: (width = 240) => mounted.get(FLEET_STATUS_WIDGET_KEY)!.render(width).join("\n"),
+		asyncText: () => mounted.get(WIDGET_KEY)!.render(width).join("\n"),
+		roster: (nextWidth = 240) => { width = nextWidth; return mounted.get(FLEET_STATUS_WIDGET_KEY)!.render(width).join("\n"); },
 		activate() { fleet.handleKey("\x1b[B"); },
 		close() { fleet.dispose(); mounted.get(WIDGET_KEY)?.dispose?.(); renderWidget(ctx, []); },
 	};
@@ -44,12 +45,12 @@ it("does not invalidate a disposed async widget when structural coverage changes
 	} finally { h.close(); }
 });
 
-it("collapses only after the actual same-UI roster renders, and restores on deactivation/disposal", () => {
+it("uses the current same-UI projection before the roster renders, and restores on deactivation/disposal", () => {
 	const h = harness();
 	try {
 		assert.match(h.asyncText(), /unique-worker/);
 		h.activate();
-		assert.match(h.asyncText(), /unique-worker/, "activation alone is not rendered coverage");
+		assert.doesNotMatch(h.asyncText(), /unique-worker/, "the current projection is available before below-editor rendering");
 		assert.match(h.roster(), /unique-worker/);
 		const before = h.requests;
 		assert.match(h.asyncText(), /Workflow children shown in Fleet roster/);
@@ -74,7 +75,7 @@ it("retains detail for row overflow, horizontal truncation and nested children",
 			renderWidget(h.ctx, [...h.state.asyncJobs.values()]);
 			h.activate(); h.roster(kind === "width" ? 20 : 240);
 			assert.doesNotMatch(h.asyncText(), /Workflow children shown in Fleet roster/, kind);
-			assert.match(h.asyncText(), /unique-worker/, kind);
+			if (kind !== "width") assert.match(h.asyncText(), /unique-worker/, kind);
 		} finally { h.close(); }
 	}
 });
@@ -132,7 +133,7 @@ it("covers flat materialized leaf cards only after every row renders and checks 
 		h.setExpanded(true);
 		assert.match(h.asyncText(), /alpha-worker/);
 		h.activate();
-		assert.match(h.asyncText(), /second-beta-worker/);
+		assert.doesNotMatch(h.asyncText(), /second-beta-worker/);
 		assert.match(h.roster(), /second-beta-worker/);
 		assert.match(h.asyncText(), /Workflow children shown in Fleet roster/);
 		assert.doesNotMatch(h.asyncText(), /alpha-worker|beta-worker/);
@@ -147,7 +148,8 @@ it("covers flat materialized leaf cards only after every row renders and checks 
 		h.fleet.refresh(); h.roster();
 		assert.doesNotMatch(h.asyncText(), /arriving-worker/);
 		h.roster(25);
-		assert.match(h.asyncText(), /arriving-worker/);
+		assert.match(h.asyncText(), /arrivi/);
+		assert.doesNotMatch(h.asyncText(), /Workflow children shown in Fleet roster/);
 		h.roster(); h.fleet.handleKey("\x1b");
 		assert.match(h.asyncText(), /arriving-worker/);
 	} finally { h.close(); }
@@ -178,6 +180,7 @@ it("restores chain detail when scheduling changes Fleet row membership", () => {
 			{ index: 1, agent: "second-worker", status: "pending" },
 		];
 		renderWidget(h.ctx, [h.job, alpha]);
+		h.fleet.dispose(); // This case exercises structural validation of explicit coverage without a mounted provider.
 		setInlineWorkflowCoverage(h.ctx.ui, new Map([[h.job.asyncId, inlineWorkflowRenderKey(h.job, [alpha])]]));
 		assert.doesNotMatch(h.asyncText(), /first-worker|second-worker/);
 

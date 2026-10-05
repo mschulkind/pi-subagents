@@ -36,6 +36,7 @@ function firstRunningGlyph(text: string): string {
 	return text.match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●]/)?.[0] ?? "";
 }
 
+const mountedTestWidgets = new WeakMap<object, { render(width: number): string[]; dispose?(): void }>();
 function createUiContext() {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
@@ -44,6 +45,7 @@ function createUiContext() {
 		ui: {
 			theme,
 			setWidget: (_key: string, value: unknown) => {
+				if (value === undefined) mountedTestWidgets.get(widgets.at(-1) as object)?.dispose?.();
 				widgets.push(value);
 			},
 			requestRender: () => {
@@ -61,7 +63,10 @@ function createUiContext() {
 }
 
 function renderWidgetLines(widget: unknown, width = 180): string[] {
-	return (widget as (_tui: { requestRender(): void }, widgetTheme: typeof theme) => { render(width: number): string[] })({ requestRender() {} }, theme).render(width);
+	const factory = widget as (_tui: { requestRender(): void }, widgetTheme: typeof theme) => { render(width: number): string[]; dispose?(): void };
+	let component = mountedTestWidgets.get(factory);
+	if (!component) { component = factory({ requestRender() {} }, theme); mountedTestWidgets.set(factory, component); }
+	return component.render(width);
 }
 
 function restoreDescriptor(target: object, key: string, descriptor: PropertyDescriptor | undefined): void {
