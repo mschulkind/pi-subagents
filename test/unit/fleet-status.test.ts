@@ -46,13 +46,14 @@ const theme = {
 };
 
 describe("below-editor subagent FleetView", () => {
-	it("mixes workflow and subagent rows under one Down/Up owner and delegates Enter", async () => {
+	it("ignores Dynamic Workflows' roster bridge while retaining native workflows, external jobs, and navigation", async () => {
 		const slot = Symbol.for("pi.mixed-work.fleet.v1");
 		const opened: string[] = [];
+		const delegated: string[] = [];
 		const entry = {
 			version: 1, sessionId: "session-current", accepted: false,
 			rows: [{ id: "wf-1", name: "Audit", status: "paused", phase: "Review", done: 2, total: 3, startedAt: 2000 }],
-			open: async (id: string) => { opened.push(id); },
+			open: async (id: string) => { delegated.push(id); },
 		};
 		(globalThis as Record<symbol, unknown>)[slot] = entry;
 		const state = stateForTest();
@@ -60,30 +61,50 @@ describe("below-editor subagent FleetView", () => {
 			asyncId: "agent-one", asyncDir: "/tmp/agent-one", status: "running", startedAt: 1000,
 			mode: "single", steps: [{ agent: "worker", status: "running" }],
 		});
+		state.asyncJobs.set("native-workflow", {
+			asyncId: "native-workflow", asyncDir: "/tmp/native-workflow", status: "running", startedAt: 3000,
+			mode: "workflow", steps: [{ agent: "reviewer", workflowKey: "review", phase: "Review", status: "running" }],
+		});
+		clearExternalRuns();
+		registerExternalRun({ id: "external-review", sessionId: "session-current", source: "test", label: "Dependency review", state: "running", startedAt: 4000 });
 		let widgetFactory: ((tui: unknown, theme: typeof theme) => { render(width: number): string[] }) | undefined;
 		const ctx = { hasUI: true, ui: {
 			setWidget(_key: string, content: typeof widgetFactory | undefined) { if (content) widgetFactory = content; },
 			onTerminalInput() { return () => {}; }, getEditorText() { return ""; }, notify() {}, theme,
 		} } as unknown as ExtensionContext;
-		const fleet = new SubagentFleetStatus(state, () => {}, { refreshMs: 60_000 });
+		const fleet = new SubagentFleetStatus(state, (key) => { opened.push(key); }, { refreshMs: 60_000 });
 		try {
 			fleet.setContext(ctx);
-			assert.equal(entry.accepted, true);
-			const component = widgetFactory!({ requestRender() {}, focusedComponent: Object.create(Editor.prototype) }, theme);
-			assert.match(component.render(160).join("\n"), /1 workflow · 2\/3 agents/);
-			for (let n = 0; n < 3; n++) assert.deepEqual(fleet.handleKey("\x1b[B"), { consume: true });
-			const rows = component.render(160).join("\n");
-			assert.ok(rows.indexOf("worker") < rows.indexOf("workflow · Audit"));
-			assert.match(rows, /workflow · Audit · paused · Review/);
-			assert.match(rows, /2\/3 agents/);
-			assert.deepEqual(fleet.handleKey("\r"), { consume: true });
-			await new Promise((resolve) => setImmediate(resolve));
-			assert.deepEqual(opened, ["wf-1"]);
+			assert.equal(entry.accepted, false, "FleetView must not acknowledge the removed bridge");
+			const tui = { requestRender() {}, focusedComponent: Object.create(Editor.prototype) };
+			const component = widgetFactory!(tui, theme);
+			assert.doesNotMatch(component.render(160).join("\n"), /Audit|2\/3 agents/);
+			assert.deepEqual(collectFleetStatusEntries(state).map((row) => row.key), ["async:agent-one:0", "async:native-workflow", "external:external-review"]);
+			assert.deepEqual(fleet.handleKey("\x1b[B"), { consume: true }, "native Down still enters selection");
+			const rows = component.render(240).join("\n");
+			assert.match(rows, /workflow · running/);
+			assert.match(rows, /Review: review \(reviewer\) · running/);
+			assert.match(rows, /external · Dependency review/);
+			assert.doesNotMatch(rows, /Audit|paused|2\/3 agents/);
+			for (const key of ["async:agent-one:0", "async:native-workflow", "external:external-review"]) {
+				assert.deepEqual(fleet.handleKey("\x1b[B"), { consume: true });
+				assert.deepEqual(fleet.handleKey("\r"), { consume: true });
+				await new Promise((resolve) => setImmediate(resolve));
+				widgetFactory!(tui, theme);
+				assert.equal(opened.at(-1), key, "Enter uses the native inspector callback");
+			}
+			for (let n = 0; n < 3; n++) assert.deepEqual(fleet.handleKey("\x1b[A"), { consume: true });
+			assert.deepEqual(fleet.handleKey("\x1b[A"), { consume: true }, "Up at main exits selection");
+			assert.equal(fleet.handleKey("j"), undefined, "inactive FleetView retains printable editor input");
+			assert.deepEqual(delegated, []);
+			entry.accepted = true;
+			fleet.refresh();
 		} finally {
 			fleet.dispose();
 			delete (globalThis as Record<symbol, unknown>)[slot];
+			clearExternalRuns();
 		}
-		assert.equal(entry.accepted, false);
+		assert.equal(entry.accepted, true, "refresh/disposal must not mutate another extension's bridge");
 	});
 	for (const source of ["workflow", "nested-run", "nested-step"] as const) {
 		it(`advances only running ${source} detail elapsed and freezes terminal evidence`, () => {
